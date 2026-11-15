@@ -391,6 +391,7 @@
         <label class="chk"><input type="checkbox" id="cVolKey"> Volume-down button talks</label>
         <p class="note">While Roger is on screen, hold the volume-down button to talk. (It stops changing the volume.)</p>
         <div class="row" style="margin-top:10px"><span class="note" style="flex:1;margin:0">Back only hides Roger and keeps it running. This closes it completely.</span><button class="ghost" id="quitApp" type="button">Close Roger</button></div>
+        <p class="note" id="appVer" style="margin-top:10px"></p>
       </div>
       <div id="installBox" class="hidden">
         <h3>Install</h3>
@@ -473,6 +474,7 @@
       <label class="chk"><input type="checkbox" id="cMonitor"> Hear myself live (use headphones, or it will squeal)</label>
       <label class="chk"><input type="checkbox" id="cNs"> Noise suppression</label>
       <label class="chk"><input type="checkbox" id="cEc"> Echo cancellation</label>
+      <p class="note hidden" id="ecNote">On phones, leave this off. Turning it on makes Android play Roger through the quiet phone-call volume instead of the normal media volume.</p>
       <label class="chk"><input type="checkbox" id="cAgc"> Automatic gain control</label>
 
       <h3>Speaker</h3>
@@ -534,6 +536,9 @@
   if ((saved.v || 1) < 2) { saved.autoSignIn = false; saved.v = 2; }   // one-time: the old default was "join automatically"; now you press Join
   const cfg = { ...DEF_CFG, ...saved, alerts: { ...DEF_CFG.alerts, ...(saved.alerts || {}) }, vox: { ...DEF_CFG.vox, ...(saved.vox || {}) } };
   const saveCfg = () => store.set('cfg2', cfg);
+  // Phones: echo cancellation puts Android into "phone call" mode, so Roger came out of the quiet call/earpiece channel.
+  // With it off, Roger plays like music or a video, on the normal media volume. (One-time switch for existing phone users.)
+  if (IS_TOUCH && !cfg.mediaAudio) { cfg.ec = false; cfg.mediaAudio = 1; saveCfg(); }
 
   // ---------- state ----------
   const RATE = 16000;
@@ -1845,6 +1850,7 @@
       $('hint').textContent = 'Hold the big button to talk. Tap it quickly to stay on air, tap again to stop. If someone is talking, keep holding to record; it sends when they finish.';
       $('browserCtl').querySelector('.note').textContent = 'Hold the big button at the bottom to talk, or tap it once to stay on air and tap again to stop.';
       $('touchGen').classList.remove('hidden');
+      $('ecNote').classList.remove('hidden');
       $('cKeepAlive').checked = cfg.keepAlive;
       $('cKeepAlive').onchange = (e) => { cfg.keepAlive = e.target.checked; saveCfg(); if (cfg.keepAlive && wantOnline) startKeepAlive(); else stopKeepAlive(); };
       if (APP) {
@@ -1856,6 +1862,7 @@
         $('cFloat').onchange = (e) => { cfg.floatBtn = e.target.checked; saveCfg(); call('setFloat', cfg.floatBtn, true); };
         $('cVolKey').onchange = (e) => { cfg.volKey = e.target.checked; saveCfg(); call('setVolKey', cfg.volKey); };
         $('quitApp').onclick = () => call('quit');
+        try { if (APP.version) $('appVer').textContent = 'Roger app version ' + APP.version() + '. It checks for a new version every time you open it and updates itself.'; } catch {}
         call('setFloat', cfg.floatBtn, false); call('setVolKey', cfg.volKey);
       }
     } else {
