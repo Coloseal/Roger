@@ -469,6 +469,8 @@
       <select id="selIn"></select>
       <div class="meter"><i class="mbar"></i></div>
       <div class="vol" style="margin-top:8px"><span class="n">Microphone volume</span><input type="range" id="micGain" min="0" max="300" value="100"><span class="v" id="micGainVal">100%</span></div>
+      <div class="row" style="margin-top:10px"><button class="ghost" id="micTest" type="button">Test microphone</button><span class="note" id="micTestMsg" style="flex:1;margin:0"></span></div>
+      <label class="chk"><input type="checkbox" id="cMonitor"> Hear myself live (use headphones, or it will squeal)</label>
       <label class="chk"><input type="checkbox" id="cNs"> Noise suppression</label>
       <label class="chk"><input type="checkbox" id="cEc"> Echo cancellation</label>
       <label class="chk"><input type="checkbox" id="cAgc"> Automatic gain control</label>
@@ -558,6 +560,10 @@
   const nextT = new Map();
   let levelPct = 0, voxActive = false, voxLast = 0;
   let preroll = [];
+  // Microphone test: records ~5 s exactly as it would be sent, then plays it back through the same radio sound.
+  const micTest = { rec: false, frames: [], peak: 0, srcs: [] };
+  let micTimer = 0, micPhase = '', monGain = null;
+  const MIC_TEST_SECS = 5, MIC_HINT = 'Records 5 seconds, then plays it back the way others will hear you.';
 
   const rmsToPct = (rms) => Math.max(0, Math.min(100, ((20 * Math.log10(rms || 1e-6)) + 60) / 60 * 100));
 
@@ -582,6 +588,8 @@
     workletNode.connect(mute); mute.connect(ctx.destination);
     micGainNode = ctx.createGain(); micGainNode.gain.value = cfg.micGain;
     micGainNode.connect(workletNode);
+    monGain = ctx.createGain(); monGain.gain.value = 0;       // "hear myself live": off until you tick it in Settings → Audio
+    micGainNode.connect(monGain); monGain.connect(playBus);
     analyser = ctx.createAnalyser(); analyser.fftSize = 512;
 
     const ratio = ctx.sampleRate / RATE;
@@ -592,7 +600,7 @@
       levelPct = rmsToPct(Math.sqrt(sum / b.length));
       voxTick();
       const voxOn = cfg.vox.on;
-      if (ptt === 'idle' && !voxOn) { pos = 0; prev = 0; return; }
+      if (ptt === 'idle' && !voxOn && !micTest.rec) { pos = 0; prev = 0; return; }
       const out = [];
       while (pos < b.length - 1) {
         const i = Math.floor(pos), f = pos - i;
@@ -603,6 +611,7 @@
       pos -= b.length; prev = b[b.length - 1];
       const pcm = new Int16Array(out.length);
       for (let k = 0; k < out.length; k++) { const s = Math.max(-1, Math.min(1, out[k])); pcm[k] = s < 0 ? s * 0x8000 : s * 0x7fff; }
+      if (micTest.rec) { micTest.frames.push(pcm.buffer.slice(0)); micTest.peak = Math.max(micTest.peak, levelPct); }
       if (ptt === 'live') { if (ws && ws.readyState === 1) ws.send(pcm.buffer); }
       else if ((ptt === 'pending' || ptt === 'rec') && queue.length < MAX_FRAMES) queue.push(pcm.buffer);
       else if (ptt === 'idle') { preroll.push(pcm.buffer); if (preroll.length > 14) preroll.shift(); }   // ~0.3 s lead-in for VOX
@@ -1051,7 +1060,7 @@
   function forward() { if (nav.i < nav.stack.length - 1) { nav.i++; applyPage(); } }
   function applyPage() {
     const pg = curPage(), onChannel = pg.p === 'channel', onAdmin = pg.p === 'admin';
-    if (pg.p !== 'settings') $('settings').classList.add('hidden');
+    if (pg.p !== 'settings') { $('settings').classList.add('hidden'); stopMicTest(); }
     if (pg.p !== 'history') { if (!$('histModal').classList.contains('hidden')) stopHistory(); $('histModal').classList.add('hidden'); }
     document.querySelector('.chs').classList.toggle('hidden', onChannel || onAdmin);
     document.querySelector('.rosterbox').classList.toggle('hidden', onChannel || onAdmin);
@@ -1709,6 +1718,51 @@
   };
   $('selOut').onchange = async (e) => { store.set('outputId', e.target.value); await setOutput(e.target.value); };
   $('testOut').onclick = () => { if (ctx) { tone(660, 0.18, 0.2); tone(880, 0.18, 0.2, 0.22); } };
+  // ---- microphone test ----
+  const micMsg = (t, bad) => { const m = $('micTestMsg'); m.textContent = t; m.style.color = bad ? 'var(--red)' : ''; };
+  function stopMicTest(msg, bad) {
+    clearInterval(micTimer); clearTimeout(micTimer); micTimer = 0; micPhase = '';
+    micTest.rec = false; micTest.frames = [];
+    for (const s of micTest.srcs) { try { s.stop(); } catch {} }
+    micTest.srcs = [];
+    if (monGain) monGain.gain.value = 0;
+    $('cMonitor').checked = false;
+    $('micTest').textContent = 'Test microphone';
+    micMsg(msg || MIC_HINT, bad);
+  }
+  function playMicTest() {
+    const frames = micTest.frames, peak = micTest.peak;
+    micTest.rec = false; micTest.frames = []; clearInterval(micTimer);
+    if (!frames.length || peak < 12) { stopMicTest("I couldn't hear anything. Pick the right microphone above, turn up the microphone volume, or check that Roger is allowed to use the microphone.", true); return; }
+    micPhase = 'play'; $('micTest').textContent = 'Stop';
+    micMsg('Playing back… this is how others hear you.');
+    let t = ctx.currentTime + 0.15;
+    for (const f of frames) {
+      const pcm = new Int16Array(f), ab = ctx.createBuffer(1, pcm.length, RATE), d = ab.getChannelData(0);
+      for (let i = 0; i < pcm.length; i++) d[i] = pcm[i] / 32768;
+      const s = ctx.createBufferSource(); s.buffer = ab; s.connect(playBus); s.start(t); t += ab.duration; micTest.srcs.push(s);
+    }
+    const verdict = peak > 92 ? 'Done. That was very loud. Turn the microphone volume down a little.' : peak < 30 ? 'Done. That was quiet. Turn the microphone volume up, or speak closer.' : 'Done. Sounds good. You\'re all set.';
+    micTimer = setTimeout(() => stopMicTest(verdict), Math.max(0, (t - ctx.currentTime) * 1000) + 300);
+  }
+  $('micTest').onclick = () => {
+    if (micPhase) { stopMicTest(); return; }
+    if (!ctx || !monGain) { micMsg('Sign in first, then try again.', true); return; }
+    if (ptt !== 'idle') { micMsg("You're on air right now. Try again in a moment.", true); return; }
+    ctx.resume();
+    micTest.frames = []; micTest.peak = 0; micTest.rec = true; micPhase = 'rec';
+    $('micTest').textContent = 'Cancel';
+    const t0 = performance.now();
+    const tick = () => { const left = Math.ceil(MIC_TEST_SECS - (performance.now() - t0) / 1000); if (left <= 0) playMicTest(); else micMsg(`Recording… speak now (${left})`); };
+    tick(); micTimer = setInterval(tick, 200);
+  };
+  $('cMonitor').onchange = (e) => {
+    if (!ctx || !monGain) { e.target.checked = false; micMsg('Sign in first, then try again.', true); return; }
+    if (micPhase) { e.target.checked = false; return; }
+    ctx.resume(); monGain.gain.value = e.target.checked ? 1 : 0;
+  };
+  micMsg(MIC_HINT);
+
   $('master').oninput = (e) => { store.set('master', e.target.value / 100); $('masterVal').textContent = e.target.value + '%'; applyMaster(); };
   $('micGain').oninput = (e) => { cfg.micGain = e.target.value / 100; $('micGainVal').textContent = e.target.value + '%'; if (micGainNode) micGainNode.gain.value = cfg.micGain; saveCfg(); };
   for (const [id, k] of [['cNs', 'ns'], ['cEc', 'ec'], ['cAgc', 'agc']]) {

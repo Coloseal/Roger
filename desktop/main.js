@@ -174,10 +174,28 @@ ipcMain.handle('set-on-top', (_e, v) => {
 });
 
 // ---- auto-update (installed app only) -------------------------------------
-// New versions are published as GitHub Releases. The app checks shortly after start and every few hours,
-// downloads in the background, and installs when you click "Restart & install" or the next time you quit.
+// New versions are published as GitHub Releases. The app checks once, every time it starts. If there is a newer
+// version it downloads it right away, installs it and reopens itself (a small "Updating Roger" window shows progress).
+// There is no background timer: you only get updates when you launch the app.
 let updater = null;
 let updState = { state: app.isPackaged ? 'idle' : 'dev', version: app.getVersion() };
+let updWin = null;
+function updSplash(text) {
+  try {
+    if (!updWin || updWin.isDestroyed()) {
+      updWin = new BrowserWindow({ width: 380, height: 120, frame: false, resizable: false, movable: true, alwaysOnTop: true, center: true, skipTaskbar: false, show: false, backgroundColor: '#0a0e14', title: 'Updating Roger' });
+      updWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(
+        '<body style="margin:0;background:#0a0e14;color:#cfd8e3;font-family:Segoe UI,sans-serif;display:flex;flex-direction:column;justify-content:center;height:100vh;padding:0 26px;box-sizing:border-box;border:1px solid #2a384c">' +
+        '<div style="font-size:17px;font-weight:600;color:#7ee787">Updating Roger</div>' +
+        '<div id="t" style="margin-top:6px;font-size:13px"></div>' +
+        '<div style="margin-top:12px;height:6px;background:#1d2735;border-radius:3px;overflow:hidden"><div id="b" style="height:100%;width:0;background:#7ee787"></div></div></body>'));
+      updWin.once('ready-to-show', () => updWin && !updWin.isDestroyed() && updWin.show());
+    }
+    const pct = Math.max(0, Math.min(100, text.pct || 0));
+    updWin.webContents.executeJavaScript(`document.getElementById('t').textContent=${JSON.stringify(text.msg)};document.getElementById('b').style.width='${pct}%'`).catch(() => {});
+  } catch {}
+}
+function closeSplash() { try { if (updWin && !updWin.isDestroyed()) updWin.destroy(); } catch {} updWin = null; }
 function setUpd(s) { updState = { ...updState, ...s }; sendToWin('update-state', updState); }
 function initUpdater() {
   const testFeed = process.env.BHR_UPDATE_URL;            // lets us test updates against a local folder
@@ -189,14 +207,19 @@ function initUpdater() {
   updater.autoInstallOnAppQuit = true;
   if (testFeed) { updater.forceDevUpdateConfig = true; updater.setFeedURL({ provider: 'generic', url: testFeed }); }
   updater.on('checking-for-update', () => setUpd({ state: 'checking', error: '' }));
-  updater.on('update-available', (i) => setUpd({ state: 'downloading', next: i.version, percent: 0 }));
+  updater.on('update-available', (i) => { setUpd({ state: 'downloading', next: i.version, percent: 0 }); updSplash({ msg: `Downloading version ${i.version}…`, pct: 0 }); });
   updater.on('update-not-available', () => setUpd({ state: 'none' }));
-  updater.on('download-progress', (p) => setUpd({ state: 'downloading', percent: Math.round(p.percent || 0) }));
-  updater.on('update-downloaded', (i) => setUpd({ state: 'ready', next: i.version, percent: 100 }));
-  updater.on('error', (e) => setUpd({ state: 'error', error: String((e && e.message) || e).split('\n')[0].slice(0, 140) }));
+  updater.on('download-progress', (p) => { const pc = Math.round(p.percent || 0); setUpd({ state: 'downloading', percent: pc }); updSplash({ msg: `Downloading version ${updState.next || ''}… ${pc}%`, pct: pc }); });
+  updater.on('update-downloaded', (i) => {
+    setUpd({ state: 'ready', next: i.version, percent: 100 });
+    console.log('UPDATE-READY ' + i.version);
+    if (process.env.BHR_UPDATE_DRYRUN) { closeSplash(); return; }       // (testing only: don't really install)
+    updSplash({ msg: `Installing version ${i.version}. Roger will reopen by itself…`, pct: 100 });
+    setTimeout(() => { try { quitting = true; updater.quitAndInstall(true, true); } catch (e) { closeSplash(); } }, 800);   // silent install, then reopen
+  });
+  updater.on('error', (e) => { closeSplash(); setUpd({ state: 'error', error: String((e && e.message) || e).split('\n')[0].slice(0, 140) }); });
   const check = () => { if (updState.state !== 'downloading' && updState.state !== 'ready') updater.checkForUpdates().catch(() => {}); };
-  setTimeout(check, 8000);
-  setInterval(check, 4 * 60 * 60 * 1000);
+  setTimeout(check, 1500);                                // once per launch, no timer
   updater.__check = check;
 }
 ipcMain.handle('upd-get', () => updState);

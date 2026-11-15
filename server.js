@@ -183,7 +183,7 @@ function disconnectUser(userId, reason) {
 
 // ---- http ----------------------------------------------------------------
 const PUBLIC = path.join(__dirname, 'public');
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json', '.json': 'application/json' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json', '.json': 'application/json', '.apk': 'application/vnd.android.package-archive' };
 // Strict per account (6 wrong tries locks that account for 5 min); loose per IP address, because a whole squad
 // can share one connection and a few typos must not lock everyone out.
 const loginLimiter = new Limiter({ max: 6, lockMs: 5 * 60_000 });
