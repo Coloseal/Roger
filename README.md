@@ -96,3 +96,17 @@ npm install
 npm start          # http://localhost:3000
 ```
 Desktop app against a local server: `cd desktop; npm install; $env:BHR_SERVER='http://localhost:3000'; npm start`
+
+## Privacy and safety (what players should know)
+- **Voice** travels over an encrypted connection (HTTPS/WSS) to the Roger server, which relays it to the people on the channel.
+  It is **not end-to-end encrypted**: the person who runs the server could technically access the audio.
+- **History** (the replay list) keeps recent voice messages in the server's **memory only**: up to 40 per channel, no more than
+  6 hours, about 30 minutes of audio in total. Nothing is written to disk or the database, and it is wiped whenever the server
+  restarts or sleeps.
+- **Accounts** store a username, role, last callsign and a slow hash of the password (never the password). Moderator actions are
+  logged. There are no ads or trackers.
+- **Sign-in is protected:** no public sign-up, wrong guesses lock an account for a few minutes, other websites cannot open a voice
+  connection, and the site sends HSTS, a Content-Security-Policy and other protective headers.
+- **The apps are not code-signed** (that needs paid developer accounts), so Windows, Android and macOS show a warning the first time.
+  The full source is in this public repository, so anyone can read what the apps do.
+- **Not independently audited.** Never reuse a password from another account here.

@@ -254,6 +254,7 @@
     </div>
     <div class="err" id="loginErr"></div>
     <button class="linkbtn hidden" id="viewLink" type="button" style="margin-top:14px"></button>
+    <p class="note" style="margin-top:14px;font-size:11px">Privacy: your voice goes over an encrypted connection to the Roger server, which relays it to your channel. It is not end-to-end encrypted. Details are in Settings → Account after you sign in.</p>
     <p class="note hidden" id="iosTip" style="margin-top:14px">On iPhone: tap the Share button, then <b>Add to Home Screen</b>, and open Roger from there. It works best that way.</p>
   </form>
 </div>
@@ -457,6 +458,11 @@
       <div class="row" style="margin-top:8px"><span class="note" id="pwStatus" style="flex:1;margin:0"></span><button class="ghost" id="pwBtn" type="button">Change password</button></div>
       <h3>Sign out</h3>
       <div class="row"><span class="note" style="flex:1;margin:0">Next time you'll type your username and password again.</span><button class="ghost" id="signOutBtn" type="button">Sign out</button></div>
+      <h3>Privacy</h3>
+      <p class="note"><b>Your voice:</b> sent over an encrypted connection to the Roger server, which passes it on to the people on your channel. It is <b>not end-to-end encrypted</b>, so the person who runs the server could technically access it.</p>
+      <p class="note"><b>History:</b> so people can replay what they missed, the server keeps recent voice messages in its memory only: up to 40 per channel, for no more than 6 hours, and about 30 minutes of audio in total. They are never saved to a disk or the database, and are wiped whenever the server restarts or goes to sleep.</p>
+      <p class="note"><b>Your account:</b> the server stores your username, your role, your last callsign, and a scrambled (hashed) copy of your password, never the password itself. Moderator actions such as kicks and resets are written to a log. Roger has no ads or trackers.</p>
+      <p class="note"><b>Good habits:</b> never reuse a password from another account here, and don't share your login.</p>
     </div>
 
     <!-- Alerts -->
@@ -466,10 +472,12 @@
 
     <!-- Control -->
     <div class="tabp hidden" data-p="control">
+      <label class="chk" style="margin-top:0"><input type="checkbox" id="cToggle"> Toggle mode: tap once to start talking, tap again to stop</label>
+      <p class="note" id="toggleNote"></p>
       <div id="desktopCtl" class="hidden">
         <h3 style="margin-top:0">Favorite channel hotkeys</h3>
         <select id="selSlots"></select>
-        <p class="note">Your channels are numbered 1, 2, 3… (type a number on a channel to move it). Slot 1 gets the first key of the set, slot 2 the second, and so on. <b>Hold</b> a key to talk until you let go, or <b>tap</b> it to stay on air and tap again to release.</p>
+        <p class="note">Your channels are numbered 1, 2, 3… (type a number on a channel to move it). Slot 1 gets the first key of the set, slot 2 the second, and so on. By default you <b>hold</b> a key to talk and you're off the air the moment you let go. Turn on <b>Toggle mode</b> above if you'd rather tap once to start and tap again to stop.</p>
         <div id="slotList" style="margin-top:8px"></div>
         <h3>Other keys</h3>
         <div class="krow"><span class="lbl">Talk key <span style="color:var(--dim)">(on your selected channel)</span></span><kbd id="kTalk">…</kbd><button class="ghost" data-set="talk" type="button">Set</button></div>
@@ -558,6 +566,7 @@
     },
     micGain: 1, ns: true, ec: true, agc: true,
     keepAlive: true,                     // phones: keep listening with the screen off / while using another app
+    toggleTalk: false,                   // false (default): you only transmit while holding the key/button. true: tap to start, tap again to stop
     boost: true,                         // lift quiet microphones (headsets) toward a steady level
     btMic: false,                        // Android app: use the Bluetooth headset's own microphone (call quality) instead of the phone's
     floatBtn: true,                      // Android app: floating talk button over other apps
@@ -971,9 +980,9 @@
   const bar = $('bar');                   // status bar: talking is done with keys (desktop hotkeys, or Space in a browser)
   const anySheetOpen = () => !$('settings').classList.contains('hidden') || !$('histModal').classList.contains('hidden');
   window.addEventListener('keydown', (e) => {
-    if (e.code === 'Space' && !e.repeat && !/INPUT|TEXTAREA|SELECT|BUTTON/.test(document.activeElement.tagName) && !anySheetOpen()) { e.preventDefault(); pttDown(); }
+    if (e.code === 'Space' && !e.repeat && !/INPUT|TEXTAREA|SELECT|BUTTON/.test(document.activeElement.tagName) && !anySheetOpen()) { e.preventDefault(); if (cfg.toggleTalk) toggleTalk(); else pttDown(); }
   });
-  window.addEventListener('keyup', (e) => { if (e.code === 'Space') pttUp(); });
+  window.addEventListener('keyup', (e) => { if (e.code === 'Space' && !cfg.toggleTalk) pttUp(); });
 
   // Phones: the status bar is the talk button. Hold = talk until you let go. A quick tap = stay on air, tap again to stop.
   // (In a browser's computer view the bar works the same with the mouse, as well as holding Space.)
@@ -987,7 +996,7 @@
     const pressEnd = () => {
       if (!pressed) return; pressed = false;
       if (consumed) { consumed = false; return; }
-      if (performance.now() - downAt < 250 && (ptt === 'live' || ptt === 'pending')) { touchLatched = true; render(); }
+      if (cfg.toggleTalk && performance.now() - downAt < 250 && (ptt === 'live' || ptt === 'pending')) { touchLatched = true; render(); }   // (toggle mode only)
       else pttUp();
     };
     window.rogerPress = (down) => { if (down) pressStart(); else pressEnd(); };   // also used by the Android app's floating button and volume key
@@ -1743,7 +1752,7 @@
       $('csInput').value = me.name; $('csStatus').textContent = 'This is the name others see. You can change it any time.'; $('csStatus').style.color = '';
       $('pwStatus').textContent = '';
     }
-    $('cNs').checked = cfg.ns; $('cEc').checked = cfg.ec; $('cAgc').checked = cfg.agc; $('cBoost').checked = cfg.boost;
+    $('cNs').checked = cfg.ns; $('cEc').checked = cfg.ec; $('cAgc').checked = cfg.agc; $('cBoost').checked = cfg.boost; $('cToggle').checked = cfg.toggleTalk;
     $('micGain').value = Math.round(cfg.micGain * 100); $('micGainVal').textContent = $('micGain').value + '%';
     $('master').value = Math.round(store.get('master', 1) * 100); $('masterVal').textContent = $('master').value + '%';
     $('cVox').checked = cfg.vox.on; $('voxThr').value = cfg.vox.thr; $('voxThrVal').textContent = cfg.vox.thr;
@@ -1835,6 +1844,31 @@
   for (const [id, k] of [['cNs', 'ns'], ['cEc', 'ec'], ['cAgc', 'agc']]) {
     $(id).onchange = async (e) => { cfg[k] = e.target.checked; saveCfg(); try { await openMic(store.get('inputId', '')); } catch {} };
   }
+  // ---- hold vs toggle talking, and the matching help text on every kind of device ----
+  function refreshTalkHints() {
+    const t = cfg.toggleTalk;
+    $('toggleNote').textContent = t
+      ? 'Toggle mode is ON: tap your talk key or button once to go on air, and tap again to stop. Turn it off to go back to hold-to-talk.'
+      : 'Off (default): you only transmit while you hold the key or button, and you are off the air as soon as you let go.';
+    const busy = ' If someone is talking, keep holding to record; it sends when they finish.';
+    const busyT = ' If someone is talking, your message is recorded and sent when they finish.';
+    let hint, note = null;
+    if (IS_DESKTOP) hint = (t ? 'Tap your talk key to go on air and tap it again to stop (change keys in Settings → Control).' : 'Hold your talk key to talk and let go to stop (change it in Settings → Control).') + busyT;
+    else if (IS_TOUCH) {
+      hint = (t ? 'Tap the big button to go on air and tap again to stop.' : 'Hold the big button to talk and let go to stop.') + (t ? busyT : busy);
+      note = t ? 'Tap the big button at the bottom to go on air, and tap it again to stop.' : 'Hold the big button at the bottom to talk. When you let go, you are off the air.';
+    } else {
+      hint = (t ? 'Press Space (or click the bar above) to go on air, and again to stop.' : 'Hold Space (or click and hold the bar above) to talk.') + (t ? busyT : busy) + ' (The Roger desktop app adds keys that work while you are in the game.)';
+      note = (t ? 'Press <kbd>Space</kbd> (or click the big bar at the top) to go on air and again to stop.' : 'Hold <kbd>Space</kbd> to talk, or click and hold the big bar at the top. You are off the air as soon as you let go.') + ' Install the Roger desktop app to get keys that work while you\'re in the game.';
+    }
+    $('hint').textContent = hint;
+    if (note !== null) { const n = $('browserCtl').querySelector('.note'); if (n) n.innerHTML = note; }
+  }
+  $('cToggle').onchange = (e) => {
+    cfg.toggleTalk = e.target.checked; saveCfg();
+    touchLatched = false; if (ptt !== 'idle') pttUp();          // switching mode never leaves you stuck on air
+    refreshTalkHints(); render();
+  };
   $('cBoost').onchange = (e) => { cfg.boost = e.target.checked; saveCfg(); if (workletNode) workletNode.port.postMessage({ boost: cfg.boost }); };
   $('cVox').onchange = (e) => { cfg.vox.on = e.target.checked; saveCfg(); if (!cfg.vox.on) { preroll = []; if (voxActive) { voxActive = false; pttUp(); } } render(); };
   $('voxThr').oninput = (e) => { cfg.vox.thr = +e.target.value; $('voxThrVal').textContent = e.target.value; $('voxMark').style.left = e.target.value + '%'; saveCfg(); };
@@ -1845,8 +1879,13 @@
     $('desktopGen').classList.remove('hidden'); $('desktopCtl').classList.remove('hidden');
     $('hint').textContent = 'Hold your talk key to talk (change it in Settings → Control). Tap it to stay on air, tap again to release. If someone is talking, your message is recorded and sent when they finish.';
     // Windows only reports key *presses* to global hotkeys, but while a key is held it keeps repeating them.
-    // So: hold the key = talk until you let go; tap the key = stay on air, tap again to release.
+    // Default (hold mode): you transmit while the key is held and go off the air as soon as the repeats stop.
+    // A held key only starts repeating after the PC's "repeat delay" (about half a second), so after a press we wait that long
+    // (plus a margin) for the first repeat; no repeat means it was only a tap and we release. The delay is learned and remembered.
+    // Toggle mode (Settings → Control): hold the key = talk until you let go; tap the key = stay on air, tap again to release.
     let talkOwner = null; const ks = {};
+    let keyDelay = +store.get('repeatDelay', 850) || 850;         // ms between a key press and its first auto-repeat on this PC
+    const firstDelay = () => Math.min(1500, keyDelay + 250);
     const channelFor = (id) => (id.startsWith('ch:') ? id.slice(3) : id.startsWith('slot:') ? joinedList()[+id.slice(5) - 1] : null);
     function talkDown(id) {
       const name = channelFor(id);
@@ -1858,6 +1897,24 @@
       if (id === 'repeat') { const n = performance.now(); if (n - (ks.repeat || 0) > 400) replayLast(); ks.repeat = n; return; }
       const s = ks[id] || (ks[id] = { last: 0, mode: 'idle', probe: 0, rel: 0 });
       const now = performance.now(), gap = now - s.last; s.last = now;
+      if (!cfg.toggleTalk) {                             // ---- hold mode (default)
+        if (talkOwner === id && ptt === 'idle') { talkOwner = null; clearTimeout(s.rel); }   // (we were stopped some other way: start fresh)
+        if (talkOwner === id) {                          // the key is still down (auto-repeat): stay on air, release shortly after the repeats stop
+          if (s.mode === 'armed') {                      // first sign of the key repeating: learn this PC's repeat delay
+            const d = gap > 120 ? gap : s.cand;          // (gap > 120: the repeat came while we were still waiting; else we had already given up and this "press" was really the first repeat)
+            if (d >= 200 && d < 1500) { keyDelay = Math.round(d); store.set('repeatDelay', keyDelay); }
+          }
+          s.mode = 'hold'; clearTimeout(s.rel); s.rel = setTimeout(() => { s.mode = 'idle'; talkUp(id); }, 170);
+          return;
+        }
+        if (ptt === 'idle') {
+          s.cand = (s.expPress && now - s.expPress < 1600) ? now - s.expPress : 0; s.pressAt = now;
+          talkDown(id); s.mode = 'armed'; clearTimeout(s.rel);
+          s.rel = setTimeout(() => { s.mode = 'idle'; s.expPress = s.pressAt; talkUp(id); }, firstDelay());
+        }
+        else if (!talkOwner) pttUp();
+        return;
+      }
       if (gap < 120) {                                   // auto-repeat: the key is being held
         clearTimeout(s.probe);
         if (talkOwner === id) { s.mode = 'hold'; clearTimeout(s.rel); s.rel = setTimeout(() => { s.mode = 'idle'; talkUp(id); }, 170); }
@@ -1967,6 +2024,7 @@
     $('installBtn').onclick = async () => { if (!installEvt) return; try { installEvt.prompt(); await installEvt.userChoice; } catch {} installEvt = null; $('installBox').classList.add('hidden'); };
     if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});
   }
+  refreshTalkHints();
   // Light HTTP traffic keeps a free-tier host awake while anyone is connected.
   setInterval(() => { if (wantOnline) fetch('/health', { cache: 'no-store' }).catch(() => {}); }, 4 * 60 * 1000);
 

@@ -226,11 +226,36 @@ async function handleLogin(req, res) {
   json(res, 200, { ok: true, token: mintToken(r.user), user: { username: r.user.username, role: r.user.role, lastCallsign: r.user.lastCallsign || '' } });
 }
 
+// Content-Security-Policy for the Roger page. The page has one inline <script>; instead of allowing all inline scripts, the policy
+// names that exact script by its hash (computed from the file being served, so it can never go out of step), which blocks any
+// script an attacker might manage to inject. Everything else may only come from this server.
+function cspFor(html, host) {
+  const hashes = [];
+  if (html) for (const m of html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) hashes.push(`'sha256-${crypto.createHash('sha256').update(m[1], 'utf8').digest('base64')}'`);
+  const h = String(host || '').replace(/[^a-zA-Z0-9.:\-\[\]]/g, '');
+  return [
+    "default-src 'self'",
+    `script-src 'self' ${hashes.join(' ')} blob:`.replace(/\s+/g, ' '),   // blob: = the microphone-capture worklet
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "media-src 'self' blob: data:",
+    `connect-src 'self' wss://${h} ws://${h}`,
+    "worker-src 'self' blob:",
+    "manifest-src 'self'",
+    "font-src 'self' data:",
+    "object-src 'none'", "base-uri 'none'", "form-action 'self'", "frame-ancestors 'none'",
+  ].join('; ');
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'microphone=(self), camera=(), geolocation=(), payment=(), usb=(), serial=(), display-capture=()');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  // Tell browsers to only ever use HTTPS for this site (only sent over HTTPS: the host's front door sets x-forwarded-proto).
+  if (String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https') res.setHeader('Strict-Transport-Security', 'max-age=15552000');
   try {
     if (url.pathname === '/health') { res.writeHead(200); return res.end('ok'); }
     if (url.pathname === '/api/status') return json(res, 200, { ready: accounts ? [...store.users.values()].some((u) => u.role === 'admin') : false });
@@ -241,7 +266,9 @@ const server = http.createServer(async (req, res) => {
     if (!file.startsWith(PUBLIC)) { res.writeHead(403); return res.end(); }
     fs.readFile(file, (err, data) => {
       if (err) { res.writeHead(404); return res.end('Not found'); }
-      res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
+      const hdr = { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache' };
+      if (path.extname(file) === '.html') hdr['Content-Security-Policy'] = cspFor(data.toString('utf8'), req.headers.host);
+      res.writeHead(200, hdr);
       res.end(data);
     });
   } catch (e) { console.error('http error:', e.message); if (!res.headersSent) { res.writeHead(500); } res.end(); }
