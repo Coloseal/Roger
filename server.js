@@ -55,7 +55,7 @@ function getChannel(name, isDefault = false, desc = '') {
   let ch = channels.get(name);
   if (!ch) {
     if (channels.size >= MAX_CHANNELS) return null;
-    ch = { id: nextChannelId++, name, isDefault, desc, members: new Set(), talkers: new Set(), mode: modes[name] === 'open' ? 'open' : 'queue' };
+    ch = { id: nextChannelId++, name, isDefault, desc, members: new Set(), talkers: new Set(), waiters: [], mode: modes[name] === 'open' ? 'open' : 'queue' };
     channels.set(name, ch);
   }
   return ch;
@@ -132,15 +132,41 @@ function broadcastState() {
 const sendTo = (c, obj) => { if (c.ws.readyState === 1) c.ws.send(JSON.stringify(obj)); };
 function notifyStaff(obj) { for (const c of clients.values()) if (isStaff(c)) sendTo(c, obj); }
 
-function releaseFloor(ch, client) {
+// Gives a client the floor and starts recording their message.
+function grantFloor(ch, client) {
+  if (client.talkingIn) releaseFloor(client.talkingIn, client, client.talkingIn === ch);
+  ch.waiters = ch.waiters.filter((w) => w !== client);
+  ch.talkers.add(client); client.talkingIn = ch; client.lastFrame = Date.now();
+  client.rec = { ch, chunks: [], bytes: 0, ts: Date.now() };
+  clearTimeout(client.talkTimer);
+  client.talkTimer = setTimeout(() => {                         // nobody can hold the channel forever
+    if (ch.talkers.has(client)) { releaseFloor(ch, client); sendTo(client, { type: 'timeout', ch: ch.name }); broadcastState(); }
+  }, MAX_TALK_MS);
+  sendTo(client, { type: 'granted', ch: ch.name });
+}
+
+// People who tried to talk while the channel was busy are waiting in line. The moment the floor frees up it goes
+// straight to the next one in line (no gap for someone else to jump in), so a queued message is never lost.
+function serveWaiters(ch) {
+  while (ch.waiters.length) {
+    if (ch.mode !== 'open' && ch.talkers.size) return;
+    const c = ch.waiters.shift();
+    if (!ch.members.has(c) || c.ws.readyState !== 1) continue;
+    grantFloor(ch, c);
+  }
+}
+
+function releaseFloor(ch, client, noServe) {
   if (!ch.talkers.has(client)) return;
   clearTimeout(client.talkTimer);
   ch.talkers.delete(client);
   client.talkingIn = null;
   finalizeRecording(client);
+  if (!noServe) serveWaiters(ch);
 }
 
 function leaveChannel(client, ch) {
+  ch.waiters = ch.waiters.filter((w) => w !== client);
   releaseFloor(ch, client);
   ch.members.delete(client);
   client.channels.delete(ch);
@@ -333,16 +359,18 @@ wss.on('connection', (ws) => {
     } else if (msg.type === 'ptt_start') {
       const ch = channels.get(String(msg.ch));
       if (!ch || !ch.members.has(client)) return;
-      if (client.talkingIn) releaseFloor(client.talkingIn, client);
       if (ch.mode !== 'open' && ch.talkers.size && !ch.talkers.has(client)) { sendTo(client, { type: 'denied', ch: ch.name, by: [...ch.talkers][0].name }); return; }
-      ch.talkers.add(client); client.talkingIn = ch; client.lastFrame = Date.now();
-      client.rec = { ch, chunks: [], bytes: 0, ts: Date.now() };
-      clearTimeout(client.talkTimer);
-      client.talkTimer = setTimeout(() => {                         // nobody can hold the channel forever
-        if (ch.talkers.has(client)) { releaseFloor(ch, client); sendTo(client, { type: 'timeout', ch: ch.name }); broadcastState(); }
-      }, MAX_TALK_MS);
-      sendTo(client, { type: 'granted', ch: ch.name });
+      grantFloor(ch, client);
       broadcastState();
+    } else if (msg.type === 'ptt_wait') {
+      // "I want the floor as soon as it's free": joins the line, and is granted automatically when it's their turn.
+      const ch = channels.get(String(msg.ch));
+      if (!ch || !ch.members.has(client) || ch.talkers.has(client)) return;
+      if (!ch.waiters.includes(client)) ch.waiters.push(client);
+      serveWaiters(ch); broadcastState();
+    } else if (msg.type === 'ptt_unwait') {
+      const ch = channels.get(String(msg.ch));
+      if (ch) ch.waiters = ch.waiters.filter((w) => w !== client);
     } else if (msg.type === 'ptt_end') {
       if (client.talkingIn) { releaseFloor(client.talkingIn, client); broadcastState(); }
 
@@ -379,6 +407,7 @@ wss.on('connection', (ws) => {
       if (mode === 'queue' && ch.talkers.size > 1) {                    // going back to one-at-a-time: the earliest talker keeps the channel
         for (const t of [...ch.talkers].slice(1)) { releaseFloor(ch, t); sendTo(t, { type: 'timeout', ch: ch.name }); }
       }
+      serveWaiters(ch);                                                  // switching to open net: anyone waiting goes on air now
       if (mode === 'open') modes[ch.name] = 'open'; else delete modes[ch.name];
       store.setMeta('channel_modes', JSON.stringify(modes)).catch((e) => console.error('could not save channel modes:', e.message));
       store.addAudit(client.user.username, 'set_channel_mode', ch.name, mode === 'open' ? 'open net' : 'one at a time');

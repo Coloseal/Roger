@@ -315,8 +315,8 @@ function createWindow() {
 app.whenReady().then(() => {
   loadSettings();
   Menu.setApplicationMenu(null);
-  // Allow the microphone and desktop notifications for our own pages only.
-  const allowed = (perm) => perm === 'media' || perm === 'notifications';
+  // Allow the microphone for our own pages only (Roger no longer shows desktop notifications).
+  const allowed = (perm) => perm === 'media';
   session.defaultSession.setPermissionRequestHandler((wc, perm, cb) => {
     const u = wc.getURL();
     cb(allowed(perm) && (u.startsWith(SERVER_ORIGIN) || u.startsWith('file:')));

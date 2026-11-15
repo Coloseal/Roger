@@ -744,15 +744,19 @@
       } else if (m.type === 'audio_missing') {
         const w = histWait.get(m.id); if (w) { histWait.delete(m.id); w(null); }
       } else if (m.type === 'granted') {
-        if (outbox && outbox.state === 'req' && ptt === 'idle') { alertSnd('clear'); sendOutbox(); }
+        // The server hands the floor to whoever has been waiting longest, the instant it frees up.
+        if (outbox && (outbox.state === 'req' || outbox.state === 'wait') && outbox.ch === m.ch && ptt === 'idle') { alertSnd('clear'); sendOutbox(); }
         else if (ptt === 'pending') {
+          ptt = 'live'; alertSnd('clear');
+          queue.forEach((b) => ws.send(b)); queue = [];
+        } else if (ptt === 'rec' && held && m.ch === tx) {         // still holding the key: go on air with what we recorded
           ptt = 'live'; alertSnd('clear');
           queue.forEach((b) => ws.send(b)); queue = [];
         } else send({ type: 'ptt_end' });                     // nobody wants the floor any more
         render();
       } else if (m.type === 'denied') {
-        if (outbox && outbox.state === 'req') outbox.state = 'wait';        // someone got there first: keep waiting
-        else if (ptt === 'pending') { if (held && cfg.busyMode !== 'warn') { ptt = 'rec'; alertSnd('busy'); } else { ptt = 'idle'; held = false; queue = []; alertSnd('busy'); } }
+        if (outbox && outbox.state === 'req') { outbox.state = 'wait'; send({ type: 'ptt_wait', ch: outbox.ch }); }        // someone got there first: get in line
+        else if (ptt === 'pending') { if (held && cfg.busyMode !== 'warn') { ptt = 'rec'; alertSnd('busy'); send({ type: 'ptt_wait', ch: tx }); } else { ptt = 'idle'; held = false; queue = []; alertSnd('busy'); } }
         render();
       } else if (m.type === 'timeout') {
         ptt = 'idle'; held = false; queue = []; outbox = null; alertSnd('busy'); render();
@@ -796,7 +800,7 @@
     if (!outbox || outbox.state !== 'wait' || ptt !== 'idle' || !ws || ws.readyState !== 1) return;
     const ch = chState.find((c) => c.name === outbox.ch);
     if (!ch || !joined.has(ch.name)) { outbox = null; return; }
-    if (!busyIn(ch)) { outbox.state = 'req'; send({ type: 'ptt_start', ch: outbox.ch }); }
+    if (!busyIn(ch)) send({ type: 'ptt_wait', ch: outbox.ch });         // (normally the server has already granted it)
   }
 
   async function sendOutbox() {
@@ -814,6 +818,7 @@
   function cancelOutbox() {
     const was = outbox; outbox = null;
     if (was && (was.state === 'req' || was.state === 'send')) send({ type: 'ptt_end' });
+    if (was && was.state === 'wait') send({ type: 'ptt_unwait', ch: was.ch });
     render();
   }
   $('outcancel').onclick = cancelOutbox;
@@ -823,13 +828,13 @@
 
   function pttDown() {
     if (ptt !== 'idle' || !me || !joined.has(tx) || !ctx) return;
-    if (outbox && outbox.state !== 'wait') { alertSnd('busy'); return; }      // a message is being sent right now
+    if (outbox) { alertSnd('busy'); return; }      // your earlier message is still queued or being sent: never replace it (it would be lost)
     if (ctx.state !== 'running') ctx.resume();
     const ch = txChan();
     const busy = busyIn(ch);
     if (busy) { alertSnd('busy'); if (cfg.busyMode === 'warn') return; }     // two warning beeps, once per attempt
     held = true; queue = [];
-    if (busy) { ptt = 'rec'; render(); return; }                              // busy: record, send when they finish
+    if (busy) { ptt = 'rec'; send({ type: 'ptt_wait', ch: tx }); render(); return; }   // busy: record, get in line, send when it's our turn
     ptt = 'pending'; send({ type: 'ptt_start', ch: tx }); render();
   }
 
@@ -842,7 +847,7 @@
       outbox = { ch: tx, frames: queue, state: prev === 'pending' ? 'req' : 'wait' };
       queue = [];
       if (prev === 'rec') { alertSnd('queued'); tryOutbox(); }
-    } else { if (prev === 'pending') send({ type: 'ptt_end' }); queue = []; }
+    } else { if (prev === 'pending') send({ type: 'ptt_end' }); if (prev === 'rec') send({ type: 'ptt_unwait', ch: tx }); queue = []; }
     render();
   }
   const toggleTalk = () => (ptt === 'idle' ? pttDown() : pttUp());
