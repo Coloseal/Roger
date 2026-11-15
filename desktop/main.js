@@ -4,7 +4,7 @@
 // RegisterHotKey only reports key presses, so the global key is press-to-talk / press-again-to-stop.
 // (Holding Space inside the app window is still true hold-to-talk.)
 
-const { app, BrowserWindow, ipcMain, session, shell, Menu, net, globalShortcut, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, session, shell, Menu, net, globalShortcut, screen, Tray } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -162,7 +162,7 @@ ipcMain.on('overlay-test', () => {
 
 ipcMain.handle('get-startup', () => !!app.getLoginItemSettings().openAtLogin);
 ipcMain.handle('set-startup', (_e, v) => {
-  if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: !!v });
+  if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: !!v, args: ['--hidden'] });
   return !!app.getLoginItemSettings().openAtLogin;
 });
 ipcMain.handle('get-on-top', () => !!settings.onTop);
@@ -209,6 +209,51 @@ ipcMain.handle('upd-install', () => {
   if (updater && updState.state === 'ready') updater.quitAndInstall(true, true);   // silent install, then relaunch
 });
 
+// ---- tray + quitting ------------------------------------------------------
+// Closing the window (X) can keep Roger running in the system tray, so your hotkeys and incoming voice keep working.
+// Right-click the tray icon -> "Quit Roger" ends everything (main window, overlay and background processes).
+let tray = null, quitting = false;
+const closeToTray = () => settings.closeToTray !== false;
+
+function showWindow() {
+  if (!win || win.isDestroyed()) { createWindow(); return; }
+  if (win.isMinimized()) win.restore();
+  win.show(); win.focus();
+}
+function quitApp() {
+  quitting = true;
+  try { if (ovWin && !ovWin.isDestroyed()) ovWin.destroy(); } catch {}
+  app.quit();
+}
+function buildTrayMenu() {
+  return Menu.buildFromTemplate([
+    { label: 'Open Roger', click: showWindow },
+    {
+      label: 'Closing the window keeps Roger running here', type: 'checkbox', checked: closeToTray(),
+      click: (item) => { settings.closeToTray = item.checked; saveSettings(); sendToWin('close-mode', closeToTray() ? 'tray' : 'quit'); },
+    },
+    { type: 'separator' },
+    { label: 'Quit Roger', click: quitApp },
+  ]);
+}
+function buildTray() {
+  try {
+    tray = new Tray(path.join(__dirname, 'icon.ico'));
+    tray.setToolTip('Roger');
+    tray.setContextMenu(buildTrayMenu());
+    tray.on('click', () => { if (win && !win.isDestroyed() && win.isVisible() && win.isFocused()) win.hide(); else showWindow(); });
+    tray.on('double-click', showWindow);
+  } catch (e) { console.error('tray unavailable:', e.message); tray = null; }
+}
+ipcMain.handle('close-mode-get', () => (closeToTray() ? 'tray' : 'quit'));
+ipcMain.handle('close-mode-set', (_e, v) => {
+  settings.closeToTray = v !== 'quit'; saveSettings();
+  if (tray) tray.setContextMenu(buildTrayMenu());
+  return closeToTray() ? 'tray' : 'quit';
+});
+ipcMain.handle('app-quit', () => quitApp());
+ipcMain.handle('app-info', () => ({ version: app.getVersion(), tray: !!tray && !tray.isDestroyed(), closeMode: closeToTray() ? 'tray' : 'quit', packaged: app.isPackaged }));
+
 // ---- window ---------------------------------------------------------------
 async function waitForServer() {
   // Free hosting sleeps when idle; poll /health until it answers, then load the client.
@@ -232,6 +277,8 @@ async function loadClient() {
 
 function createWindow() {
   win = new BrowserWindow({
+    // Started by Windows at login (--hidden): go straight to the tray instead of popping up over whatever you're doing.
+    show: !(process.argv.includes('--hidden') && closeToTray() && tray),
     width: 400, height: 680, minWidth: 320, minHeight: 440,
     backgroundColor: '#0a0e14', title: 'Roger', icon: path.join(__dirname, 'icon.png'),
     webPreferences: {
@@ -248,6 +295,17 @@ function createWindow() {
   win.webContents.on('did-fail-load', (_e, _code, _desc, url, isMain) => {
     if (isMain && url.startsWith(SERVER_URL)) setTimeout(loadClient, 1500);   // server dropped or asleep: retry
   });
+  win.on('close', (e) => {
+    if (quitting) return;
+    if (closeToTray() && tray) {                      // X = hide to the tray; Quit is in the tray menu
+      e.preventDefault(); win.hide();
+      if (!settings.trayHintShown) {
+        settings.trayHintShown = true; saveSettings();
+        try { tray.displayBalloon({ title: 'Roger is still running', content: 'It stays in the tray so your keys and incoming voice keep working. Right-click the tray icon and choose Quit to exit.' }); } catch {}
+      }
+    } else { quitApp(); }                             // not using the tray: closing the window really quits
+  });
+  win.on('session-end', () => { quitting = true; });     // Windows is shutting down / logging off: don't block it
   win.on('closed', () => { win = null; });
   win.webContents.on('did-finish-load', () => sendToWin('update-state', updState));   // (re)show update status after each page load
   if (settings.onTop) win.setAlwaysOnTop(true, 'screen-saver');
@@ -267,9 +325,14 @@ app.whenReady().then(() => {
   hotkeys = settings.hotkeys || { talk: settings.accel || 'F8', repeat: 'Shift+F8' };
   slotScheme = Object.prototype.hasOwnProperty.call(SLOT_SCHEMES, settings.slotScheme) ? settings.slotScheme : 'none';
   registerAll();
+  buildTray();
   createWindow();
   initUpdater();
 });
-app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
-app.on('window-all-closed', () => app.quit());
-app.on('will-quit', () => globalShortcut.unregisterAll());
+app.on('second-instance', () => showWindow());          // launching Roger again brings the (hidden) window back
+app.on('window-all-closed', () => { if (!tray) app.quit(); });
+app.on('before-quit', () => {
+  quitting = true;
+  try { if (ovWin && !ovWin.isDestroyed()) ovWin.destroy(); } catch {}   // the hidden overlay window must not keep the app alive
+});
+app.on('will-quit', () => { globalShortcut.unregisterAll(); try { if (tray) tray.destroy(); } catch {} });

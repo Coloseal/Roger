@@ -49,6 +49,39 @@
   .ghost { padding: 5px 10px; border: 1px solid var(--line2); border-radius: 8px; background: var(--panel2); font-size: 12px; white-space: nowrap; }
   .ghost:hover { border-color: var(--accent); }
 
+  /* back / forward bar */
+  .navrow { display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: var(--bg); border-bottom: 1px solid var(--line); }
+  .navbtn { padding: 6px 12px; border-radius: 8px; border: 1px solid var(--line2); background: var(--panel2); font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .navbtn.back:not(:disabled) { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .navbtn:hover:not(:disabled) { filter: brightness(1.15); }
+  .navbtn:disabled { opacity: .35; cursor: default; }
+  .navtitle { flex: 1; min-width: 0; text-align: center; font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* channel page */
+  .chpage { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; }
+  .pc-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .bigback { padding: 9px 16px; border-radius: 10px; border: 0; background: var(--accent); color: #fff; font-weight: 700; font-size: 14px; white-space: nowrap; }
+  .bigback:hover { filter: brightness(1.15); }
+  .pc-title { min-width: 0; display: flex; flex-direction: column; }
+  .pc-title b { font-size: 16px; letter-spacing: .02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pc-title span { font-family: var(--mono); font-size: 11px; color: var(--dim); }
+  .pc-desc { color: var(--dim); font-size: 12px; margin-bottom: 8px; }
+  .pc-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  #pcFilter { margin-bottom: 8px; }
+  .pm { display: grid; grid-template-columns: 30px 1fr; align-items: center; column-gap: 10px; padding: 7px 9px; margin-bottom: 5px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+  .pm .av { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--panel2); border: 1px solid var(--line2); font-weight: 700; font-size: 13px; }
+  .pm .nm { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 13px; }
+  .pm .nm b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pm .tag { font-family: var(--mono); font-size: 10px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line2); color: var(--dim); flex: none; }
+  .pm.me { border-color: #1c5b43; } .pm.me .tag { color: var(--green); border-color: #1c5b43; }
+  .pm.talk { border-color: var(--accent); background: #0c2238; } .pm.talk .av { border-color: var(--accent); }
+  .pm.talk .tag.live { color: #cfe8ff; border-color: var(--accent); background: var(--accent-dim); }
+  .pm .vrow { grid-column: 2; display: grid; grid-template-columns: 1fr 40px; align-items: center; column-gap: 8px; margin-top: 4px; }
+  .pm .vrow .v { font-family: var(--mono); font-size: 10px; color: var(--amber); text-align: right; }
+  .pm .vrow input[type=range] { height: 14px; }
+  .more { padding: 2px 9px; border-radius: 999px; background: var(--accent-dim); border: 1px solid var(--accent); font-size: 12px; cursor: pointer; }
+  .peek { padding: 3px 9px; border-radius: 6px; border: 1px solid var(--line2); background: transparent; font-size: 11px; flex: none; color: var(--dim); }
+  .peek:hover { border-color: var(--accent); color: var(--text); }
   .updbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 12px; background: #0f2a1f; border-bottom: 1px solid #1c5b43; font-size: 12px; color: #9be9c4; }
   .updbar button { padding: 4px 10px; border-radius: 6px; border: 1px solid #1c5b43; background: #14402e; color: #d6fbe9; font-size: 12px; white-space: nowrap; }
   .updbar button:hover { border-color: var(--green); }
@@ -162,6 +195,11 @@
     <button class="ghost" id="histBtn" type="button">History</button>
     <button class="ghost" id="gear" type="button">Settings</button>
   </header>
+  <nav class="navrow" id="navrow">
+    <button id="navBack" class="navbtn back" type="button" title="Back (Alt+←, Esc or your mouse back button)">◀ Back</button>
+    <div id="navTitle" class="navtitle">Home</div>
+    <button id="navFwd" class="navbtn" type="button" title="Forward (Alt+→ or your mouse forward button)">Forward ▶</button>
+  </nav>
   <div class="updbar hidden" id="updbar"><span id="updtxt"></span><button id="updbtn" type="button">Restart &amp; install</button></div>
 
   <section class="talk">
@@ -182,6 +220,22 @@
       <input type="text" id="newch" maxlength="20" placeholder="New channel…" autocomplete="off">
       <button type="submit">Add</button>
     </form>
+  </section>
+
+  <!-- Channel page: everyone who is in a channel (double-click a channel to open it) -->
+  <section class="chpage hidden" id="pageChannel">
+    <div class="pc-head">
+      <button id="pcBack" class="bigback" type="button">◀ Back</button>
+      <div class="pc-title"><b id="pcName"></b><span id="pcCount"></span></div>
+    </div>
+    <div id="pcDesc" class="pc-desc hidden"></div>
+    <div class="pc-actions">
+      <button class="ghost" id="pcJoin" type="button">Join</button>
+      <button class="ghost" id="pcTx" type="button">Talk on this channel</button>
+      <button class="ghost" id="pcHist" type="button">History</button>
+    </div>
+    <input type="text" id="pcFilter" placeholder="Search people…" autocomplete="off">
+    <div id="pcList"></div>
   </section>
 
   <section class="rosterbox">
@@ -230,7 +284,15 @@
           <option value="top-right">Top right</option><option value="top-left">Top left</option><option value="top-center">Top center</option>
         </select><button class="ghost" id="ovTest" type="button">Preview</button></div>
         <p class="note">Green arrows going right while you talk. Amber arrows going left, with their name, while someone else does. It shows over borderless-window games.</p>
-          <h3>Window</h3>
+          <div id="closeBox" class="hidden">
+          <h3>When I close the window (X)</h3>
+          <select id="selClose">
+            <option value="tray">Keep Roger running in the tray (keys and voice keep working)</option>
+            <option value="quit">Quit Roger completely</option>
+          </select>
+          <div class="row" style="margin-top:8px"><span class="note" style="flex:1;margin:0">Right-click the tray icon (bottom-right of your screen, maybe under the ^ arrow) and choose Quit to exit from there.</span><button class="ghost" id="quitBtn" type="button">Quit Roger now</button></div>
+        </div>
+        <h3>Window</h3>
         <label class="chk"><input type="checkbox" id="cStartup"> Start Roger when Windows starts</label>
         <label class="chk"><input type="checkbox" id="onTop"> Keep this window on top of the game</label>
       </div>
@@ -695,8 +757,8 @@
     const d = new Date(ts), t = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     return d.toDateString() === new Date().toDateString() ? t : d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + t;
   };
-  function renderHistory() {
-    const sel = $('histCh'), cur = sel.value || tx;
+  function renderHistory(prefer) {
+    const sel = $('histCh'), cur = prefer || sel.value || tx;
     const names = [...joined];
     if (sel.options.length !== names.length || names.some((n, i) => sel.options[i].value !== n)) {
       sel.replaceChildren(); names.forEach((n) => { const o = el('option', '', n); o.value = n; sel.append(o); });
@@ -713,15 +775,96 @@
       box.append(row);
     }
   }
-  $('histBtn').onclick = () => { $('histModal').classList.remove('hidden'); renderHistory(); };
-  $('histClose').onclick = () => { stopHistory(); $('histModal').classList.add('hidden'); };
-  $('histModal').addEventListener('pointerdown', (e) => { if (e.target === $('histModal')) $('histClose').onclick(); });
+  $('histBtn').onclick = () => go({ p: 'history', name: tx || '' });
+  $('histClose').onclick = () => back();
+  $('histModal').addEventListener('pointerdown', (e) => { if (e.target === $('histModal')) back(); });
   $('histCh').onchange = () => { stopHistory(); renderHistory(); };
   $('histAll').onclick = async () => {
     const items = hist.get($('histCh').value) || [];
     histStop = false;
     for (const it of items) { if (histStop) break; await playHistory(it); if (histStop) break; await sleep(250); }
   };
+
+  // ---------- pages: Back / Forward ----------
+  // Home, a channel's people list, History and Settings are all "pages". Opening one adds it to a trail, and
+  // Back / Forward walk along that trail like a browser (also Alt+←/→, Esc = back, and the mouse side buttons).
+  const nav = { stack: [{ p: 'home' }], i: 0 };
+  const curPage = () => nav.stack[nav.i];
+  function go(page) {
+    const c = curPage();
+    if (c.p === page.p && (c.name || '') === (page.name || '')) return;
+    nav.stack = nav.stack.slice(0, nav.i + 1); nav.stack.push(page);
+    if (nav.stack.length > 60) nav.stack.shift();
+    nav.i = nav.stack.length - 1; applyPage();
+  }
+  function back() { if (nav.i > 0) { nav.i--; applyPage(); } }
+  function forward() { if (nav.i < nav.stack.length - 1) { nav.i++; applyPage(); } }
+  function applyPage() {
+    const pg = curPage(), onChannel = pg.p === 'channel';
+    if (pg.p !== 'settings') $('settings').classList.add('hidden');
+    if (pg.p !== 'history') { if (!$('histModal').classList.contains('hidden')) stopHistory(); $('histModal').classList.add('hidden'); }
+    document.querySelector('.chs').classList.toggle('hidden', onChannel);
+    document.querySelector('.rosterbox').classList.toggle('hidden', onChannel);
+    $('pageChannel').classList.toggle('hidden', !onChannel);
+    $('hint').classList.toggle('hidden', pg.p !== 'home');          // more room for the people list
+    if (pg.p === 'settings' && $('settings').classList.contains('hidden')) openSettingsUi();
+    if (pg.p === 'history') { $('histModal').classList.remove('hidden'); renderHistory(pg.name); }
+    $('navBack').disabled = nav.i === 0; $('navFwd').disabled = nav.i >= nav.stack.length - 1;
+    $('navTitle').textContent = { home: 'Home', channel: pg.name, history: 'History', settings: 'Settings' }[pg.p] || '';
+    if (onChannel) { $('pcFilter').value = ''; renderChannelPage(true); }
+  }
+  $('navBack').onclick = back; $('navFwd').onclick = forward; $('pcBack').onclick = back;
+  window.addEventListener('keydown', (e) => {
+    if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); back(); }
+    else if (e.altKey && e.key === 'ArrowRight') { e.preventDefault(); forward(); }
+    else if (e.key === 'Escape' && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) back();
+  });
+  window.addEventListener('mouseup', (e) => {            // mouse side buttons
+    if (e.button === 3) { e.preventDefault(); back(); } else if (e.button === 4) { e.preventDefault(); forward(); }
+  });
+  if (window.bhr && window.bhr.onNav) window.bhr.onNav((d) => (d === 'back' ? back() : forward()));
+
+  // The people list for one channel (works for channels you haven't joined too, so you can look before you join).
+  let pcDrag = false;
+  function renderChannelPage(force) {
+    const pg = curPage(); if (pg.p !== 'channel' || (pcDrag && !force)) return;
+    const name = pg.name, c = chState.find((x) => x.name === name), isJ = joined.has(name), members = c ? c.members : [];
+    const myId = me ? me.id : -1;
+    $('pcName').textContent = name;
+    $('pcCount').textContent = c ? `${members.length} ${members.length === 1 ? 'person' : 'people'} on this channel` : 'This channel is empty or closed';
+    const d = $('pcDesc'); if (c && c.desc) { d.textContent = c.desc; d.classList.remove('hidden'); } else d.classList.add('hidden');
+    $('pcJoin').textContent = isJ ? 'Leave channel' : 'Join channel';
+    $('pcTx').classList.toggle('hidden', !isJ); $('pcHist').classList.toggle('hidden', !isJ);
+    $('pcTx').textContent = tx === name ? '✓ Your talk channel' : 'Talk on this channel';
+    const q = $('pcFilter').value.trim().toLowerCase();
+    const list = members.filter((m) => !q || m.name.toLowerCase().includes(q))
+      .sort((a, b) => ((c.talker === b.id) - (c.talker === a.id)) || ((b.id === myId) - (a.id === myId)) || a.name.localeCompare(b.name));
+    const box = $('pcList'), scroll = $('pageChannel').scrollTop; box.replaceChildren();
+    if (!list.length) box.append(el('p', 'note', members.length ? 'No one matches that search.' : 'Nobody is on this channel right now.'));
+    for (const m of list) {
+      const isMe = m.id === myId, talking = !!c && c.talker === m.id;
+      const row = el('div', 'pm' + (isMe ? ' me' : '') + (talking ? ' talk' : ''));
+      row.append(el('div', 'av', (m.name[0] || '?').toUpperCase()));
+      const nm = el('div', 'nm'); nm.append(el('b', '', m.name));
+      if (isMe) nm.append(el('span', 'tag', 'you'));
+      if (talking) nm.append(el('span', 'tag live', 'talking'));
+      row.append(nm);
+      if (!isMe) {                                       // per-person volume, right where you see them
+        const vr = el('div', 'vrow'), r = el('input'), v = el('span', 'v');
+        r.type = 'range'; r.min = 0; r.max = 200; r.value = Math.round((vols[m.name] != null ? vols[m.name] : 1) * 100); v.textContent = r.value + '%';
+        r.onpointerdown = () => { pcDrag = true; };
+        r.oninput = () => { v.textContent = r.value + '%'; vols[m.name] = r.value / 100; store.set('vols', vols); const g = spk.get(m.name); if (g) g.gain.value = vols[m.name]; };
+        vr.append(r, v); row.append(vr);
+      }
+      box.append(row);
+    }
+    $('pageChannel').scrollTop = scroll;
+  }
+  window.addEventListener('pointerup', () => { if (pcDrag) { pcDrag = false; renderChannelPage(true); } });
+  $('pcFilter').oninput = () => renderChannelPage(true);
+  $('pcJoin').onclick = () => { const n = curPage().name; if (joined.has(n)) setJoined(n, false); else tryJoin(n); renderChannelPage(true); };
+  $('pcTx').onclick = () => { selectTx(curPage().name); renderChannelPage(true); };
+  $('pcHist').onclick = () => go({ p: 'history', name: curPage().name });
 
   // ---------- channels ----------
   // Favorite-channel hotkey schemes (desktop app): slot N = the Nth channel in your list.
@@ -744,6 +887,7 @@
   function joinedList() {
     return [...order.filter((n) => joined.has(n)), ...[...joined].filter((n) => !order.includes(n))];
   }
+  let rowClickTimer = 0;
   let focusPos = null;                   // keep keyboard focus on a channel's number box while moving it with ↑ / ↓
   function moveTo(name, pos) {
     const list = joinedList().filter((n) => n !== name);
@@ -795,7 +939,15 @@
       nm.append(el('small', '', talker ? `🔊 ${talker.name}` : `${c ? c.members.length : 0} on channel` + (key ? ` · ${key}` : '')));
       const tog = el('button', 'tog', isJoined ? 'Leave' : 'Join');
       tog.onclick = (e) => { e.stopPropagation(); if (isJoined) setJoined(name, false); else tryJoin(name); };
-      row.onclick = () => { if (isJoined) selectTx(name); else tryJoin(name); };
+      // One click = join / select (after a brief pause so a double-click doesn't join by accident); double-click = see who's in it.
+      row.onclick = () => { clearTimeout(rowClickTimer); rowClickTimer = setTimeout(() => { if (isJoined) selectTx(name); else tryJoin(name); }, 230); };
+      row.ondblclick = () => { clearTimeout(rowClickTimer); go({ p: 'channel', name }); };
+      const peek = el('button', 'peek'); peek.type = 'button';
+      peek.innerHTML = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="vertical-align:-2px;margin-right:4px"><circle cx="9" cy="8" r="3.2"/><path d="M3 19c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5"/><circle cx="17" cy="9" r="2.4"/><path d="M17 14c2.4 0 4.2 1.6 4.2 4.2"/></svg>';
+      peek.append(String(c ? c.members.length : 0));
+      peek.title = 'See everyone in this channel (or double-click the channel)';
+      peek.onclick = (e) => { e.stopPropagation(); clearTimeout(rowClickTimer); go({ p: 'channel', name }); };
+      peek.ondblclick = (e) => e.stopPropagation();
       if (isJoined) {
         // Type a number to move this channel to that position in your list.
         // ▲ moves the channel UP the list (number gets smaller: 2 → 1), ▼ moves it down (2 → 3).
@@ -818,7 +970,7 @@
         step.append(up, down); box.append(num, step); box.onclick = (e) => e.stopPropagation();
         row.append(box);
       }
-      row.append(nm, tog);
+      row.append(nm, peek, tog);
       list.append(row);
     }
 
@@ -852,10 +1004,21 @@
     } else ob.classList.add('hidden');
 
     const ro = $('roster'); ro.replaceChildren();
-    if (ch && isJ) for (const m of ch.members) {
-      const isMe = m.id === myId;
-      ro.append(el('li', (isMe ? 'me ' : '') + (ch.talker === m.id ? 'talk' : ''), m.name + (isMe ? ' (you)' : '')));
+    if (ch && isJ) {
+      // Busy channels have too many people to list here: show the talker and you first, then a "+N more" link to the full list.
+      const LIMIT = 8;
+      const sorted = [...ch.members].sort((a, b) => ((ch.talker === b.id) - (ch.talker === a.id)) || ((b.id === myId) - (a.id === myId)) || a.name.localeCompare(b.name));
+      for (const m of sorted.slice(0, LIMIT)) {
+        const isMe = m.id === myId;
+        ro.append(el('li', (isMe ? 'me ' : '') + (ch.talker === m.id ? 'talk' : ''), m.name + (isMe ? ' (you)' : '')));
+      }
+      if (sorted.length > LIMIT) {
+        const more = el('li', 'more', `+${sorted.length - LIMIT} more ›`);
+        more.onclick = () => go({ p: 'channel', name: tx });
+        ro.append(more);
+      }
     }
+    if (curPage().p === 'channel') renderChannelPage();
     if (!$('settings').classList.contains('hidden')) { renderPeople(); renderChannelKeys(); renderSlots(); }
     if (focusPos) { const n = document.querySelector(`#chlist input.pos[data-name="${CSS.escape(focusPos)}"]`); focusPos = null; if (n) { n.focus(); n.select(); } }
     updateOverlay();
@@ -1010,7 +1173,8 @@
     $('voxMark').style.left = cfg.vox.thr + '%';
   }
 
-  $('gear').onclick = async () => {
+  // Settings is a page like any other: the router calls these when you arrive at / leave it.
+  async function openSettingsUi() {
     $('settings').classList.remove('hidden');
     $('outNote').classList.toggle('hidden', canPickOutput());
     $('selOut').disabled = !canPickOutput();
@@ -1018,9 +1182,10 @@
     await refreshDevices(); renderPeople(true);
     if (IS_DESKTOP) { hk = await window.bhr.getHotkeys(); renderHotkeys(); }
     if (!meterRaf) meterLoop();
-  };
-  $('setclose').onclick = () => $('settings').classList.add('hidden');
-  $('settings').addEventListener('pointerdown', (e) => { if (e.target === $('settings')) $('settings').classList.add('hidden'); });
+  }
+  $('gear').onclick = () => go({ p: 'settings' });
+  $('setclose').onclick = () => back();
+  $('settings').addEventListener('pointerdown', (e) => { if (e.target === $('settings')) back(); });
 
   $('cNotifyRecv').onchange = (e) => { cfg.notifyRecv = e.target.checked; saveCfg(); if (e.target.checked) { try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); } catch {} } };
   $('cNotifySend').onchange = (e) => { cfg.notifySend = e.target.checked; saveCfg(); };
@@ -1073,6 +1238,13 @@
     }
     window.bhr.onHotkey(onHotkey);
     window.__hotkey = onHotkey;    // (used by the automated tests)
+    if (window.bhr.getCloseMode) {       // (versions before 1.2.1 close straight to quit and have no tray)
+      $('closeBox').classList.remove('hidden');
+      window.bhr.getCloseMode().then((m) => { $('selClose').value = m; });
+      window.bhr.onCloseMode((m) => { $('selClose').value = m; });
+      $('selClose').onchange = (e) => window.bhr.setCloseMode(e.target.value);
+      $('quitBtn').onclick = () => { if (confirm('Quit Roger completely? You will stop hearing your channels.')) window.bhr.quitApp(); };
+    }
     if (window.bhr.getUpdate) {          // (older installed versions don't have the updater)
       const showUpd = (s) => {
         const v = s.version || '';
@@ -1136,6 +1308,7 @@
       try { if (wantOnline && 'wakeLock' in navigator) navigator.wakeLock.request('screen').catch(() => {}); } catch {}
     }
   });
+  applyPage();
   render();
   if (cfg.autoSignIn && store.get('name', '')) setTimeout(() => $('loginForm').requestSubmit(), 250);
 })();

@@ -19,6 +19,12 @@ contextBridge.exposeInMainWorld('bhr', {
   setOnTop: (v) => ipcRenderer.invoke('set-on-top', !!v),
   getStartup: () => ipcRenderer.invoke('get-startup'),
   setStartup: (v) => ipcRenderer.invoke('set-startup', !!v),
+  // tray / closing
+  getCloseMode: () => ipcRenderer.invoke('close-mode-get'),
+  setCloseMode: (v) => ipcRenderer.invoke('close-mode-set', String(v)),
+  onCloseMode: (cb) => ipcRenderer.on('close-mode', (_e, v) => cb(String(v))),
+  quitApp: () => ipcRenderer.invoke('app-quit'),
+  getAppInfo: () => ipcRenderer.invoke('app-info'),
   // updates
   getUpdate: () => ipcRenderer.invoke('upd-get'),
   checkUpdate: () => ipcRenderer.invoke('upd-check'),
