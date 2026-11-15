@@ -393,6 +393,8 @@
         <p class="note">When you leave Roger, a round TALK button floats on screen. Hold it to talk. Drag the dots beside it to move it. Android asks you once to allow "Display over other apps".</p>
         <label class="chk"><input type="checkbox" id="cVolKey"> Volume-down button talks</label>
         <p class="note">While Roger is on screen, hold the volume-down button to talk. (It stops changing the volume.)</p>
+        <label class="chk"><input type="checkbox" id="cBtMic"> Use my Bluetooth headset's microphone</label>
+        <p class="note">Off (recommended): your headphones keep full sound quality and Roger uses your phone's own microphone. On: Roger uses the headset's microphone, but Android switches the headset to phone-call quality, which sounds thinner and quieter.</p>
         <div class="row" style="margin-top:10px"><span class="note" style="flex:1;margin:0">Back only hides Roger and keeps it running. This closes it completely.</span><button class="ghost" id="quitApp" type="button">Close Roger</button></div>
         <p class="note" id="appVer" style="margin-top:10px"></p>
       </div>
@@ -493,6 +495,8 @@
       <label class="chk"><input type="checkbox" id="cEc"> Echo cancellation</label>
       <p class="note hidden" id="ecNote">On phones, leave this off. Turning it on makes Android play Roger through the quiet phone-call volume instead of the normal media volume.</p>
       <label class="chk"><input type="checkbox" id="cAgc"> Automatic gain control</label>
+      <label class="chk"><input type="checkbox" id="cBoost"> Boost quiet microphones (recommended with headsets)</label>
+      <p class="note hidden" id="btNote">A Bluetooth headset can make Roger quiet or choppy, because Bluetooth switches to phone-call quality when its microphone is used. If people say you're low or cutting out, choose your phone's own microphone in the list above (the headphones still play sound), or use a wired headset.</p>
 
       <h3>Speaker</h3>
       <div class="row"><select id="selOut"></select><button class="ghost" id="testOut" type="button">Test</button></div>
@@ -554,6 +558,8 @@
     },
     micGain: 1, ns: true, ec: true, agc: true,
     keepAlive: true,                     // phones: keep listening with the screen off / while using another app
+    boost: true,                         // lift quiet microphones (headsets) toward a steady level
+    btMic: false,                        // Android app: use the Bluetooth headset's own microphone (call quality) instead of the phone's
     floatBtn: true,                      // Android app: floating talk button over other apps
     volKey: false,                       // Android app: volume-down talks
     vox: { on: false, thr: 40, hang: 1.2 },
@@ -601,6 +607,8 @@
   async function initAudio() {
     ctx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
     await ctx.resume();
+    // Switching to/from headphones or Bluetooth can pause the audio engine: start it again straight away.
+    ctx.onstatechange = () => { if (ctx && ctx.state !== 'running' && wantOnline) ctx.resume().catch(() => {}); };
 
     const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 350;
     const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 3200;
@@ -609,12 +617,22 @@
     hp.connect(lp); lp.connect(comp); comp.connect(masterGain); masterGain.connect(ctx.destination);
     playBus = hp;
 
-    const code = `class Cap extends AudioWorkletProcessor{constructor(){super();this.b=new Float32Array(1024);this.n=0}
-      process(i){const x=i[0]&&i[0][0];if(x){for(let k=0;k<x.length;k++){this.b[this.n++]=x[k];
-      if(this.n===1024){this.port.postMessage(this.b.slice(0));this.n=0}}}return true}}registerProcessor('cap',Cap);`;
+    // Capture + "boost quiet microphones": headsets (especially Bluetooth) often give a very low signal. When boost is on, a gentle
+    // automatic gain lifts quiet speech toward a steady level (up to 8x), never turns loud speech down, leaves silence/background
+    // hiss alone (a noise gate stops it being pumped up), and a soft limiter prevents crackling.
+    const code = `class Cap extends AudioWorkletProcessor{constructor(){super();this.b=new Float32Array(1024);this.n=0;this.on=true;this.g=1;
+      this.port.onmessage=(e)=>{if(e.data&&e.data.boost!==undefined)this.on=!!e.data.boost}}
+      process(i){const x=i[0]&&i[0][0];if(x){let g=1;
+        if(this.on){let s=0;for(let k=0;k<x.length;k++)s+=x[k]*x[k];const r=Math.sqrt(s/x.length);
+          if(r>0.004){const want=Math.min(8,Math.max(1,0.12/r));this.g+=(want-this.g)*(want<this.g?0.25:0.006)}
+          else this.g+=(1-this.g)*0.001;
+          g=this.g}else this.g=1;
+        for(let k=0;k<x.length;k++){let v=x[k]*g;const a=v<0?-v:v;if(a>0.8)v=(v<0?-1:1)*(0.8+0.2*Math.tanh((a-0.8)/0.2));
+          this.b[this.n++]=v;if(this.n===1024){this.port.postMessage(this.b.slice(0));this.n=0}}}return true}}registerProcessor('cap',Cap);`;
     const url = URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
     await ctx.audioWorklet.addModule(url);
     workletNode = new AudioWorkletNode(ctx, 'cap');
+    workletNode.port.postMessage({ boost: cfg.boost });
     const mute = ctx.createGain(); mute.gain.value = 0;      // keeps the graph pulled without echoing the mic
     workletNode.connect(mute); mute.connect(ctx.destination);
     micGainNode = ctx.createGain(); micGainNode.gain.value = cfg.micGain;
@@ -682,7 +700,19 @@
     }
     srcNode = ctx.createMediaStreamSource(micStream);
     srcNode.connect(micGainNode); srcNode.connect(analyser);
+    // Plugging in / unplugging headphones or a Bluetooth headset connecting or dropping can end the microphone stream.
+    // That was the "cutting out": reopen it by itself.
+    micStream.getTracks().forEach((t) => { t.onended = () => scheduleMicReopen(); });
   }
+  let micReopenTimer = 0;
+  function scheduleMicReopen() {
+    if (micReopenTimer || !ctx || !wantOnline) return;
+    micReopenTimer = setTimeout(async () => {
+      micReopenTimer = 0;
+      try { if (ctx.state !== 'running') await ctx.resume(); await openMic(store.get('inputId', '')); } catch { setTimeout(scheduleMicReopen, 3000); }
+    }, 700);
+  }
+  const micAlive = () => !!micStream && micStream.getAudioTracks().some((t) => t.readyState === 'live' && !t.muted);
 
   const canPickOutput = () => typeof AudioContext !== 'undefined' && typeof AudioContext.prototype.setSinkId === 'function';
   async function setOutput(id, quiet) {
@@ -1623,8 +1653,13 @@
     let list = []; try { list = await navigator.mediaDevices.enumerateDevices(); } catch {}
     fillSelect($('selIn'), list.filter((d) => d.kind === 'audioinput'), store.get('inputId', ''), 'Default microphone');
     fillSelect($('selOut'), list.filter((d) => d.kind === 'audiooutput'), store.get('outputId', ''), 'Default speaker');
+    $('btNote').classList.toggle('hidden', !list.some((d) => /bluetooth|airpods|hands-?free|headset|buds/i.test(d.label || '')));
   }
-  if (navigator.mediaDevices) navigator.mediaDevices.addEventListener('devicechange', refreshDevices);
+  if (navigator.mediaDevices) navigator.mediaDevices.addEventListener('devicechange', () => {
+    refreshDevices();
+    // the headset changed: make sure the microphone and the sound output are still running after the switch
+    setTimeout(() => { if (ctx && ctx.state !== 'running') ctx.resume().catch(() => {}); if (ctx && wantOnline && !micAlive()) scheduleMicReopen(); }, 800);
+  });
 
   function meterLoop() {
     if ($('settings').classList.contains('hidden')) { meterRaf = 0; return; }
@@ -1708,7 +1743,7 @@
       $('csInput').value = me.name; $('csStatus').textContent = 'This is the name others see. You can change it any time.'; $('csStatus').style.color = '';
       $('pwStatus').textContent = '';
     }
-    $('cNs').checked = cfg.ns; $('cEc').checked = cfg.ec; $('cAgc').checked = cfg.agc;
+    $('cNs').checked = cfg.ns; $('cEc').checked = cfg.ec; $('cAgc').checked = cfg.agc; $('cBoost').checked = cfg.boost;
     $('micGain').value = Math.round(cfg.micGain * 100); $('micGainVal').textContent = $('micGain').value + '%';
     $('master').value = Math.round(store.get('master', 1) * 100); $('masterVal').textContent = $('master').value + '%';
     $('cVox').checked = cfg.vox.on; $('voxThr').value = cfg.vox.thr; $('voxThrVal').textContent = cfg.vox.thr;
@@ -1800,6 +1835,7 @@
   for (const [id, k] of [['cNs', 'ns'], ['cEc', 'ec'], ['cAgc', 'agc']]) {
     $(id).onchange = async (e) => { cfg[k] = e.target.checked; saveCfg(); try { await openMic(store.get('inputId', '')); } catch {} };
   }
+  $('cBoost').onchange = (e) => { cfg.boost = e.target.checked; saveCfg(); if (workletNode) workletNode.port.postMessage({ boost: cfg.boost }); };
   $('cVox').onchange = (e) => { cfg.vox.on = e.target.checked; saveCfg(); if (!cfg.vox.on) { preroll = []; if (voxActive) { voxActive = false; pttUp(); } } render(); };
   $('voxThr').oninput = (e) => { cfg.vox.thr = +e.target.value; $('voxThrVal').textContent = e.target.value; $('voxMark').style.left = e.target.value + '%'; saveCfg(); };
   $('voxHang').oninput = (e) => { cfg.vox.hang = e.target.value / 10; $('voxHangVal').textContent = cfg.vox.hang.toFixed(1) + 's'; saveCfg(); };
@@ -1889,10 +1925,12 @@
         $('cFloat').checked = cfg.floatBtn; $('cVolKey').checked = cfg.volKey;
         $('cFloat').onchange = (e) => { cfg.floatBtn = e.target.checked; saveCfg(); call('setFloat', cfg.floatBtn, true); };
         $('cVolKey').onchange = (e) => { cfg.volKey = e.target.checked; saveCfg(); call('setVolKey', cfg.volKey); };
+        $('cBtMic').checked = cfg.btMic;
+        $('cBtMic').onchange = (e) => { cfg.btMic = e.target.checked; saveCfg(); call('setBtMic', cfg.btMic); };
         $('quitApp').onclick = () => call('quit');
         const showVer = () => { try { if (APP.version) $('appVer').textContent = 'Roger app version ' + APP.version() + '. It checks for a new version every time you open it and updates itself.' + (APP.audioInfo ? ' Sound output: ' + APP.audioInfo() + '.' : ''); } catch {} };
         showVer(); $('gear').addEventListener('click', showVer);
-        call('setFloat', cfg.floatBtn, false); call('setVolKey', cfg.volKey);
+        call('setFloat', cfg.floatBtn, false); call('setVolKey', cfg.volKey); call('setBtMic', cfg.btMic);
       }
     } else {
       $('hint').textContent = 'Hold Space (or click and hold the bar above) to talk. If someone is talking, keep holding to record. It sends when they finish. (The Roger desktop app adds keys that work while you are in the game.)';
