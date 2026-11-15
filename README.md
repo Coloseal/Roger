@@ -18,12 +18,40 @@ Two parts:
 - A talker is cut off after 60 s; dropped connections free the channel immediately.
 - In the desktop app: press the talk key (default **F8**, changeable) once to go on air, press
   again to release. Holding **Space** inside the app window is true hold-to-talk.
-- Optional password: set a `ROOM_KEY` environment variable on the server.
+- **Nobody can use Roger without an account** that you or a moderator created (see below).
+
+## Accounts, moderators and joint ops
+Roger is locked: you sign in with a username + password, then choose a callsign (and can change it
+any time in Settings -> Account).
+
+| Role | What they can do |
+|---|---|
+| **Owner (admin)** | Everything. Creates moderators. Only you set this up (see "One-time setup"). |
+| **Moderator** | Opens the **Admin** page: add / delete / disable people, reset passwords, run joint ops, see who is online, read the log, and **kick** people from a channel (10 min block) or out of Roger. Can't touch the owner or other moderators. |
+| **Member** | Your group's regular people. |
+| **Joint-op** | People from other groups: a **Faction Leader** plus **HICOM 1, HICOM 2...** per faction. A moderator can switch a whole faction off (everyone is signed out at once) or delete it. |
+
+- Passwords are stored hashed, shown once when created / reset, and never kept in the app. A person has
+  one live session at a time (signing in elsewhere ends the old one).
+- After 6 wrong passwords an account is locked for 5 minutes.
+- Moderators see the account (@username) behind every callsign on a channel's people page.
+
+### One-time setup (you do this once on your host)
+1. **A free database** (so accounts survive restarts - free web hosting has no permanent disk):
+   create a free project at neon.com and copy its **connection string** (starts with `postgresql://`).
+2. On Render: your service -> **Environment** -> add three variables:
+   - `DATABASE_URL` = the connection string
+   - `ADMIN_USER` = the owner username you want (3-24 letters/numbers)
+   - `ADMIN_PASSWORD` = a long password you choose (8+ characters; 12+ is better)
+3. Redeploy. Sign in as the owner, open **Admin**, and create your moderators.
+
+Forgot the owner password? Change `ADMIN_PASSWORD` on Render and redeploy - it resets the owner login.
+Never share `DATABASE_URL`, `ADMIN_PASSWORD` or the tokens with anyone.
 
 ## Deploy the server (Render free tier)
 1. Put this folder in a GitHub repo (the `.gitignore` already skips build output).
 2. render.com -> New -> Web Service -> pick the repo. `render.yaml` fills in the settings
-   (Node, free plan, health check `/health`).
+   (Docker via the included Dockerfile, free plan, health check `/health`).
 3. You get a URL like `https://roger.onrender.com`.
 
 Free instances sleep after ~15 min with no web traffic and wake in under a minute on the next
