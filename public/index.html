@@ -1862,7 +1862,8 @@
         $('cFloat').onchange = (e) => { cfg.floatBtn = e.target.checked; saveCfg(); call('setFloat', cfg.floatBtn, true); };
         $('cVolKey').onchange = (e) => { cfg.volKey = e.target.checked; saveCfg(); call('setVolKey', cfg.volKey); };
         $('quitApp').onclick = () => call('quit');
-        try { if (APP.version) $('appVer').textContent = 'Roger app version ' + APP.version() + '. It checks for a new version every time you open it and updates itself.'; } catch {}
+        const showVer = () => { try { if (APP.version) $('appVer').textContent = 'Roger app version ' + APP.version() + '. It checks for a new version every time you open it and updates itself.' + (APP.audioInfo ? ' Sound output: ' + APP.audioInfo() + '.' : ''); } catch {} };
+        showVer(); $('gear').addEventListener('click', showVer);
         call('setFloat', cfg.floatBtn, false); call('setVolKey', cfg.volKey);
       }
     } else {
