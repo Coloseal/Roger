@@ -97,6 +97,7 @@ wss.on('connection', (ws) => {
     if (isBinary) {
       const ch = client.talkingIn;
       if (!ch || ch.talker !== client) return;
+      client.lastFrame = Date.now();
       const out = Buffer.allocUnsafe(2 + data.length);
       out.writeUInt16BE(ch.id, 0);
       data.copy ? data.copy(out, 2) : Buffer.from(data).copy(out, 2);
@@ -135,7 +136,7 @@ wss.on('connection', (ws) => {
         ws.send(JSON.stringify({ type: 'denied', ch: ch.name, by: ch.talker.name }));
         return;
       }
-      ch.talker = client; client.talkingIn = ch;
+      ch.talker = client; client.talkingIn = ch; client.lastFrame = Date.now();
       clearTimeout(ch.timer);
       ch.timer = setTimeout(() => {
         if (ch.talker) {
@@ -165,6 +166,22 @@ setInterval(() => {
     if (!c.alive) { c.ws.terminate(); continue; }
     c.alive = false; c.ws.ping();
   }
-}, 15_000);
+}, 8_000);
+
+// Hosting proxies can take a while to report a dropped player. A live talker sends audio
+// every ~20 ms, so if the floor holder goes silent for 3 s, take the floor back.
+setInterval(() => {
+  const now = Date.now();
+  let changed = false;
+  for (const ch of channels.values()) {
+    const t = ch.talker;
+    if (t && now - (t.lastFrame || 0) > 3000) {
+      releaseFloor(ch, t);
+      if (t.ws.readyState === 1) t.ws.send(JSON.stringify({ type: 'timeout', ch: ch.name }));
+      changed = true;
+    }
+  }
+  if (changed) broadcastState();
+}, 1000);
 
 server.listen(PORT, () => console.log(`Roger listening on :${PORT}`));
