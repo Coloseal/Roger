@@ -1,0 +1,44 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Roger overlay</title>
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; font: 13px/1.25 Inter, system-ui, "Segoe UI", sans-serif; }
+  #pill {
+    --c: #2fd08a; --dir: 1; --rot: 45deg;
+    position: absolute; inset: 6px; display: flex; align-items: center; gap: 12px; padding: 0 16px;
+    background: rgba(10, 14, 20, .93); border: 1.5px solid var(--c); border-radius: 12px; color: #e8eef6;
+    box-shadow: 0 0 14px color-mix(in srgb, var(--c) 45%, transparent);
+    opacity: 1; transform: translateY(0); transition: opacity .22s ease, transform .22s ease;
+  }
+  #pill.off { opacity: 0; transform: translateY(6px); }
+  #pill.rx { --c: #f5b335; --dir: -1; --rot: -135deg; }
+  .arrows { display: flex; gap: 3px; width: 38px; flex: none; justify-content: center; }
+  .arrows i { width: 9px; height: 9px; border-top: 3px solid var(--c); border-right: 3px solid var(--c); transform: rotate(var(--rot)); opacity: 0; animation: flow 1.05s ease-in-out infinite; }
+  .arrows i:nth-child(2) { animation-delay: .16s; }
+  .arrows i:nth-child(3) { animation-delay: .32s; }
+  /* chevrons light up in sequence in the direction of travel: right for transmit, left for receive */
+  #pill.rx .arrows { flex-direction: row-reverse; }
+  /* Each chevron fades in at its start edge, travels in the direction of speech and fades out completely
+     before it resets, so the reset is never seen (no arrow ever appears to move the wrong way). */
+  @keyframes flow {
+    0%   { opacity: 0; transform: translateX(calc(var(--dir) * -6px)) rotate(var(--rot)); }
+    30%  { opacity: 1; }
+    65%  { opacity: 0; transform: translateX(calc(var(--dir) * 6px)) rotate(var(--rot)); }
+    100% { opacity: 0; transform: translateX(calc(var(--dir) * 6px)) rotate(var(--rot)); }
+  }
+  .txt { min-width: 0; display: flex; flex-direction: column; }
+  .txt b { font-size: 13px; letter-spacing: .02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .txt span { font: 11px ui-monospace, "Cascadia Mono", Consolas, monospace; color: var(--c); letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+</style></head>
+<body>
+  <div id="pill" class="off"><div class="arrows"><i></i><i></i><i></i></div><div class="txt"><b id="t1"></b><span id="t2"></span></div></div>
+<script>
+  const pill = document.getElementById('pill');
+  window.ov.on((s) => {
+    if (!s || s.mode === 'off') { pill.classList.add('off'); return; }
+    pill.classList.toggle('rx', s.mode === 'rx');
+    document.getElementById('t1').textContent = s.mode === 'tx' ? 'Transmitting' : (s.name || 'Someone');
+    document.getElementById('t2').textContent = s.mode === 'tx' ? (s.channel || '') : (s.channel || '');
+    pill.classList.remove('off');
+  });
+</script>
+</body></html>

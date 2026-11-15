@@ -4,7 +4,7 @@
 // RegisterHotKey only reports key presses, so the global key is press-to-talk / press-again-to-stop.
 // (Holding Space inside the app window is still true hold-to-talk.)
 
-const { app, BrowserWindow, ipcMain, session, shell, Menu, net, globalShortcut } = require('electron');
+const { app, BrowserWindow, ipcMain, session, shell, Menu, net, globalShortcut, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -15,7 +15,7 @@ if (!app.requestSingleInstanceLock()) { app.quit(); }
 
 // ---- settings ------------------------------------------------------------
 const settingsFile = () => path.join(app.getPath('userData'), 'settings.json');
-let settings = { accel: 'F8' };
+let settings = { onTop: false };
 function loadSettings() { try { settings = { ...settings, ...JSON.parse(fs.readFileSync(settingsFile(), 'utf8')) }; } catch {} }
 function saveSettings() { try { fs.writeFileSync(settingsFile(), JSON.stringify(settings)); } catch {} }
 
@@ -40,28 +40,173 @@ function codeToKey(code) {
   return null;
 }
 
-function registerTalkKey(accel) {
-  globalShortcut.unregisterAll();
-  try {
-    const ok = globalShortcut.register(accel, () => sendToWin('ptt-toggle'));
-    return !!ok;
-  } catch { return false; }
-}
-const label = () => (globalShortcut.isRegistered(settings.accel) ? settings.accel : `${settings.accel} (unavailable)`);
-
-ipcMain.handle('ptt-get-label', () => label());
-// Renderer captured a key press while rebinding: {code, ctrl, alt, shift}
-ipcMain.handle('ptt-set-key', (_e, k) => {
-  const key = codeToKey(String(k && k.code));
-  if (!key) return { ok: false, error: 'That key can\'t be used. Try a letter, number, F-key or symbol.', label: label() };
-  const accel = [k.ctrl && 'Control', k.alt && 'Alt', k.shift && 'Shift', key].filter(Boolean).join('+');
-  const previous = settings.accel;
-  if (!registerTalkKey(accel)) {
-    registerTalkKey(previous);
-    return { ok: false, error: `${accel} is already used by another program.`, label: label() };
+// Global hotkeys: id -> accelerator. ids: 'talk', 'repeat', and 'ch:<CHANNEL NAME>' for per-channel talk keys.
+// (Windows only reports key *presses* to global hotkeys, so "talk" keys switch on / off.)
+let hotkeys = {};
+let failedKeys = {};
+// "Favorite channel" hotkeys: slot N (the Nth channel in your list) gets the Nth key of the chosen scheme.
+const SLOT_SCHEMES = {
+  none: null,
+  num: (n) => `num${n}`,
+  ctrlnum: (n) => `Control+num${n}`,
+  ctrlaltnum: (n) => `Control+Alt+num${n}`,
+  ctrlf: (n) => `Control+F${n}`,
+  ctrlaltf: (n) => `Control+Alt+F${n}`,
+  shiftf: (n) => `Shift+F${n}`,
+  altf: (n) => `Alt+F${n}`,
+};
+let slotScheme = 'none';
+function registerAll() {
+  globalShortcut.unregisterAll(); failedKeys = {};
+  for (const [id, accel] of Object.entries(hotkeys)) {
+    let ok = false;
+    try { ok = globalShortcut.register(accel, () => sendToWin('hotkey', id)); } catch {}
+    if (!ok) failedKeys[id] = true;
   }
-  settings.accel = accel; saveSettings();
-  return { ok: true, label: label() };
+  const fmt = SLOT_SCHEMES[slotScheme];
+  if (fmt) for (let n = 1; n <= 9; n++) {
+    const accel = fmt(n), id = 'slot:' + n;
+    if (Object.values(hotkeys).some((a) => a.toLowerCase() === accel.toLowerCase())) { failedKeys[id] = true; continue; }
+    let ok = false;
+    try { ok = globalShortcut.register(accel, () => sendToWin('hotkey', id)); } catch {}
+    if (!ok) failedKeys[id] = true;
+  }
+}
+const hotkeyState = () => ({ keys: { ...hotkeys }, failed: { ...failedKeys }, slotScheme });
+
+ipcMain.handle('hk-get', () => hotkeyState());
+ipcMain.handle('slots-set', (_e, scheme) => {
+  if (!Object.prototype.hasOwnProperty.call(SLOT_SCHEMES, scheme)) return hotkeyState();
+  slotScheme = scheme; settings.slotScheme = scheme; saveSettings(); registerAll();
+  return hotkeyState();
+});
+// Renderer captured a key press: {code, ctrl, alt, shift}
+ipcMain.handle('hk-set', (_e, id, k) => {
+  id = String(id);
+  const key = codeToKey(String(k && k.code));
+  if (!key) return { ok: false, error: 'That key can\'t be used. Try a letter, number, F-key or symbol.', ...hotkeyState() };
+  const accel = [k.ctrl && 'Control', k.alt && 'Alt', k.shift && 'Shift', key].filter(Boolean).join('+');
+  const clash = Object.entries(hotkeys).find(([other, a]) => other !== id && a.toLowerCase() === accel.toLowerCase());
+  if (clash) return { ok: false, error: `${accel} is already used for another action in Roger.`, ...hotkeyState() };
+  const previous = hotkeys[id];
+  hotkeys[id] = accel; registerAll();
+  if (failedKeys[id]) {
+    if (previous) hotkeys[id] = previous; else delete hotkeys[id];
+    registerAll();
+    return { ok: false, error: `${accel} is already used by another program.`, ...hotkeyState() };
+  }
+  settings.hotkeys = hotkeys; saveSettings();
+  return { ok: true, ...hotkeyState() };
+});
+ipcMain.handle('hk-clear', (_e, id) => {
+  delete hotkeys[String(id)]; registerAll(); settings.hotkeys = hotkeys; saveSettings();
+  return { ok: true, ...hotkeyState() };
+});
+
+// ---- transmit / receive overlay -------------------------------------------
+// A tiny click-through window in a screen corner: green arrows right while you talk, amber arrows left
+// with the speaker's name while someone else talks. It never takes focus from the game.
+const OV_W = 280, OV_H = 56, OV_MARGIN = 16;
+let ovWin = null, ovLoaded = false, ovLast = { mode: 'off' }, ovHideTimer = null;
+const ovCfg = () => ({ on: settings.overlayOn !== false, pos: settings.overlayPos || 'bottom-right' });
+
+function ovPlace() {
+  if (!ovWin || ovWin.isDestroyed()) return;
+  const wa = screen.getPrimaryDisplay().workArea, pos = ovCfg().pos;
+  const x = pos.endsWith('left') ? wa.x + OV_MARGIN : pos.endsWith('center') ? wa.x + Math.round((wa.width - OV_W) / 2) : wa.x + wa.width - OV_W - OV_MARGIN;
+  const y = pos.startsWith('top') ? wa.y + OV_MARGIN : wa.y + wa.height - OV_H - OV_MARGIN;
+  ovWin.setBounds({ x, y, width: OV_W, height: OV_H });
+}
+function ovEnsure() {
+  if (ovWin && !ovWin.isDestroyed()) return ovWin;
+  ovLoaded = false;
+  ovWin = new BrowserWindow({
+    width: OV_W, height: OV_H, show: false, frame: false, transparent: true, resizable: false, movable: false,
+    focusable: false, skipTaskbar: true, alwaysOnTop: true, hasShadow: false, title: 'Roger overlay',
+    webPreferences: { preload: path.join(__dirname, 'overlay-preload.js'), sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false },
+  });
+  ovWin.setIgnoreMouseEvents(true);
+  ovWin.setAlwaysOnTop(true, 'screen-saver');
+  ovWin.webContents.once('did-finish-load', () => { ovLoaded = true; ovWin.webContents.send('ov-state', ovLast); });
+  ovWin.on('closed', () => { ovWin = null; ovLoaded = false; });
+  ovWin.loadFile(path.join(__dirname, 'overlay.html'));
+  return ovWin;
+}
+function ovApply(s) {
+  ovLast = s;
+  clearTimeout(ovHideTimer);
+  if (!ovCfg().on || !s || s.mode === 'off') {
+    if (ovWin && !ovWin.isDestroyed()) {
+      if (ovLoaded) ovWin.webContents.send('ov-state', { mode: 'off' });
+      ovHideTimer = setTimeout(() => { if (ovWin && !ovWin.isDestroyed()) ovWin.hide(); }, 260);   // let the fade-out finish
+    }
+    return;
+  }
+  const w = ovEnsure(); ovPlace();
+  if (ovLoaded) w.webContents.send('ov-state', s);
+  if (!w.isVisible()) w.showInactive();
+}
+ipcMain.on('overlay-set', (_e, s) => ovApply(s && typeof s === 'object' ? { mode: String(s.mode), name: String(s.name || ''), channel: String(s.channel || '') } : { mode: 'off' }));
+ipcMain.handle('overlay-get', () => ovCfg());
+ipcMain.handle('overlay-cfg', (_e, c) => {
+  if (c && typeof c.on === 'boolean') settings.overlayOn = c.on;
+  if (c && ['bottom-right', 'bottom-left', 'bottom-center', 'top-right', 'top-left', 'top-center'].includes(c.pos)) settings.overlayPos = c.pos;
+  saveSettings(); if (!ovCfg().on) ovApply({ mode: 'off' }); else ovPlace();
+  return ovCfg();
+});
+ipcMain.on('overlay-test', () => {
+  ovApply({ mode: 'tx', name: 'You', channel: 'TEST' });
+  setTimeout(() => ovApply({ mode: 'rx', name: 'Viper-1', channel: 'TEST' }), 1700);
+  setTimeout(() => ovApply({ mode: 'off' }), 3400);
+});
+
+ipcMain.handle('get-startup', () => !!app.getLoginItemSettings().openAtLogin);
+ipcMain.handle('set-startup', (_e, v) => {
+  if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: !!v });
+  return !!app.getLoginItemSettings().openAtLogin;
+});
+ipcMain.handle('get-on-top', () => !!settings.onTop);
+ipcMain.handle('set-on-top', (_e, v) => {
+  settings.onTop = !!v; saveSettings();
+  // 'screen-saver' level keeps the window above borderless-fullscreen games too.
+  if (win && !win.isDestroyed()) win.setAlwaysOnTop(settings.onTop, 'screen-saver');
+  return settings.onTop;
+});
+
+// ---- auto-update (installed app only) -------------------------------------
+// New versions are published as GitHub Releases. The app checks shortly after start and every few hours,
+// downloads in the background, and installs when you click "Restart & install" or the next time you quit.
+let updater = null;
+let updState = { state: app.isPackaged ? 'idle' : 'dev', version: app.getVersion() };
+function setUpd(s) { updState = { ...updState, ...s }; sendToWin('update-state', updState); }
+function initUpdater() {
+  const testFeed = process.env.BHR_UPDATE_URL;            // lets us test updates against a local folder
+  if (!app.isPackaged && !testFeed) return;
+  try {
+    ({ autoUpdater: updater } = require('electron-updater'));
+  } catch (e) { console.error('updater unavailable:', e.message); return; }
+  updater.autoDownload = true;
+  updater.autoInstallOnAppQuit = true;
+  if (testFeed) { updater.forceDevUpdateConfig = true; updater.setFeedURL({ provider: 'generic', url: testFeed }); }
+  updater.on('checking-for-update', () => setUpd({ state: 'checking', error: '' }));
+  updater.on('update-available', (i) => setUpd({ state: 'downloading', next: i.version, percent: 0 }));
+  updater.on('update-not-available', () => setUpd({ state: 'none' }));
+  updater.on('download-progress', (p) => setUpd({ state: 'downloading', percent: Math.round(p.percent || 0) }));
+  updater.on('update-downloaded', (i) => setUpd({ state: 'ready', next: i.version, percent: 100 }));
+  updater.on('error', (e) => setUpd({ state: 'error', error: String((e && e.message) || e).split('\n')[0].slice(0, 140) }));
+  const check = () => { if (updState.state !== 'downloading' && updState.state !== 'ready') updater.checkForUpdates().catch(() => {}); };
+  setTimeout(check, 8000);
+  setInterval(check, 4 * 60 * 60 * 1000);
+  updater.__check = check;
+}
+ipcMain.handle('upd-get', () => updState);
+ipcMain.handle('upd-check', () => {
+  if (!updater) { setUpd({ state: app.isPackaged ? 'error' : 'dev', error: app.isPackaged ? 'Updater not available' : '' }); return updState; }
+  if (updState.state !== 'downloading' && updState.state !== 'ready') updater.checkForUpdates().catch(() => {});
+  return updState;
+});
+ipcMain.handle('upd-install', () => {
+  if (updater && updState.state === 'ready') updater.quitAndInstall(true, true);   // silent install, then relaunch
 });
 
 // ---- window ---------------------------------------------------------------
@@ -87,8 +232,8 @@ async function loadClient() {
 
 function createWindow() {
   win = new BrowserWindow({
-    width: 980, height: 720, minWidth: 360, minHeight: 520,
-    backgroundColor: '#0d110c', title: 'Roger', icon: path.join(__dirname, 'icon.png'),
+    width: 400, height: 680, minWidth: 320, minHeight: 440,
+    backgroundColor: '#0a0e14', title: 'Roger', icon: path.join(__dirname, 'icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true, nodeIntegration: false, sandbox: true,
@@ -104,20 +249,26 @@ function createWindow() {
     if (isMain && url.startsWith(SERVER_URL)) setTimeout(loadClient, 1500);   // server dropped or asleep: retry
   });
   win.on('closed', () => { win = null; });
+  win.webContents.on('did-finish-load', () => sendToWin('update-state', updState));   // (re)show update status after each page load
+  if (settings.onTop) win.setAlwaysOnTop(true, 'screen-saver');
   loadClient();
 }
 
 app.whenReady().then(() => {
   loadSettings();
   Menu.setApplicationMenu(null);
-  // Allow the microphone for our own pages only.
+  // Allow the microphone and desktop notifications for our own pages only.
+  const allowed = (perm) => perm === 'media' || perm === 'notifications';
   session.defaultSession.setPermissionRequestHandler((wc, perm, cb) => {
     const u = wc.getURL();
-    cb(perm === 'media' && (u.startsWith(SERVER_ORIGIN) || u.startsWith('file:')));
+    cb(allowed(perm) && (u.startsWith(SERVER_ORIGIN) || u.startsWith('file:')));
   });
-  session.defaultSession.setPermissionCheckHandler((_wc, perm) => perm === 'media');
-  registerTalkKey(settings.accel);
+  session.defaultSession.setPermissionCheckHandler((_wc, perm) => allowed(perm));
+  hotkeys = settings.hotkeys || { talk: settings.accel || 'F8', repeat: 'Shift+F8' };
+  slotScheme = Object.prototype.hasOwnProperty.call(SLOT_SCHEMES, settings.slotScheme) ? settings.slotScheme : 'none';
+  registerAll();
   createWindow();
+  initUpdater();
 });
 app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
 app.on('window-all-closed', () => app.quit());

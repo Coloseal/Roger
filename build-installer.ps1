@@ -1,6 +1,10 @@
-# Builds the Windows installer: installer\Roger Setup.exe
+# Builds the Windows installer and the files the auto-updater needs.
 # Usage:  .\build-installer.ps1 -ServerUrl https://your-app.onrender.com
 # (Needs Node.js on THIS machine only. Players just run the finished installer.)
+#
+# Output in .\installer :
+#   Roger-Setup-<version>.exe          share this with players (first install)
+#   Roger-Setup-<version>.exe.blockmap + latest.yml    attach all three to a GitHub Release so installed apps update themselves
 param([Parameter(Mandatory = $true)][string]$ServerUrl)
 
 $ErrorActionPreference = 'Stop'
@@ -12,6 +16,9 @@ $work = 'C:\bhr\desktop'      # short path: the NSIS compiler breaks on very lon
 (@{ serverUrl = $ServerUrl.TrimEnd('/') } | ConvertTo-Json) | Set-Content (Join-Path $src 'config.json') -Encoding ascii
 
 New-Item -ItemType Directory -Force $work | Out-Null
+# A test copy running from the build folder locks its files and makes the build fail: close it first.
+Get-Process -Name Roger -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$work\dist\*" } | Stop-Process -Force
+Start-Sleep -Seconds 3
 robocopy $src $work /E /XD (Join-Path $src 'dist') /NFL /NDL /NJH /NJS /NP | Out-Null
 
 Push-Location $work
@@ -20,10 +27,19 @@ try {
   # Electron's installer script is sometimes skipped by npm; make sure the runtime exists.
   if (-not (Test-Path node_modules\electron\dist\electron.exe)) { npm rebuild electron }
   $env:CSC_IDENTITY_AUTO_DISCOVERY = 'false'
+  $started = Get-Date
   npm run dist
+  if ($LASTEXITCODE -ne 0) { throw "The installer build failed (see the messages above). Nothing was published or copied." }
 } finally { Pop-Location }
 
 $out = Join-Path $root 'installer'
 New-Item -ItemType Directory -Force $out | Out-Null
-Copy-Item (Join-Path $work 'dist\Roger Setup *.exe') (Join-Path $out 'Roger Setup.exe') -Force
-Write-Host "Done: $out\Roger Setup.exe"
+$dist = Join-Path $work 'dist'
+$built = Get-ChildItem $dist -Filter 'Roger-Setup-*.exe' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+if (-not $built -or $built.LastWriteTime -lt $started) { throw "No freshly built installer was found, so nothing was copied." }
+Get-ChildItem $out -File | Remove-Item -Force
+Copy-Item $built.FullName $out -Force
+Copy-Item "$($built.FullName).blockmap" $out -Force
+Copy-Item (Join-Path $dist 'latest.yml') $out -Force
+Write-Host "Done. Files in $out :"
+Get-ChildItem $out | ForEach-Object { Write-Host "  $($_.Name)" }

@@ -37,12 +37,30 @@ On a Windows PC with Node.js (only the person building needs it):
 .\build-installer.ps1 -ServerUrl https://roger.onrender.com
 ```
 
-This writes `installer\Roger Setup.exe` (~80 MB). Share that file (Google Drive,
-GitHub Releases, Discord...). Because it isn't code-signed, Windows SmartScreen shows "Windows
-protected your PC" the first time: click **More info -> Run anyway**.
+This writes three files to `installer\`:
 
-Because the app loads its screen from the server, most updates (UI, channels, fixes) reach
-everyone automatically - no new installer needed. Only changes inside `desktop/` need one.
+- `Roger-Setup-<version>.exe` (~80 MB) - the installer players run the first time
+- `Roger-Setup-<version>.exe.blockmap` and `latest.yml` - what the auto-updater reads
+
+Because it isn't code-signed, Windows SmartScreen shows "Windows protected your PC" the first
+time: click **More info -> Run anyway**. (Updates that install themselves don't show it again.)
+
+Most improvements (screens, channels, fixes) reach everyone automatically because the app loads
+its screen from the server. Changes inside `desktop/` (window, hotkeys, overlay) need a new version.
+
+## Publishing an update (auto-update)
+Installed apps check GitHub Releases for a newer version a few seconds after they start and every
+4 hours. When one is found it downloads in the background, shows "Roger X is ready to install" with a
+**Restart & install** button, and installs it when you click that or the next time you quit.
+
+1. Raise `"version"` in `desktop/package.json` (for example 1.2.0 -> 1.2.1).
+2. Run `.\build-installer.ps1 -ServerUrl https://<your-app>.onrender.com`.
+3. On GitHub: repo -> **Releases** -> **Draft a new release**. Tag `v1.2.1` (same number), then
+   drag in **all three** files from `installer\` (the .exe, the .blockmap and `latest.yml`) and click
+   **Publish release**.
+
+Everyone running 1.2.0 or newer updates on their own. (Versions before 1.2.0 had no updater and
+need one manual install.) The repo must stay **public**. The file names must not be changed.
 
 ## Run locally for testing
 ```

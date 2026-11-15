@@ -1,12 +1,15 @@
 {
   "name": "roger-desktop",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "Roger - push-to-talk comms for squads",
   "main": "main.js",
   "author": "Roger",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --win nsis"
+    "dist": "electron-builder --win nsis --publish never"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11"
   },
   "devDependencies": {
     "electron": "^33.0.0",
@@ -15,26 +18,19 @@
   "build": {
     "appId": "com.roger.app",
     "productName": "Roger",
-    "directories": {
-      "output": "dist"
-    },
-    "files": [
-      "main.js",
-      "preload.js",
-      "loading.html",
-      "config.json",
-      "icon.png"
-    ],
-    "win": {
-      "target": "nsis",
-      "icon": "icon.png"
-    },
+    "directories": { "output": "dist" },
+    "files": ["main.js", "preload.js", "overlay.html", "overlay-preload.js", "loading.html", "config.json", "icon.png", "icon.ico"],
+    "publish": [{ "provider": "github", "owner": "Coloseal", "repo": "Roger" }],
+    "win": { "target": "nsis", "icon": "icon.ico" },
     "nsis": {
       "oneClick": true,
       "perMachine": false,
       "runAfterFinish": true,
       "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
+      "createStartMenuShortcut": true,
+      "installerIcon": "icon.ico",
+      "uninstallerIcon": "icon.ico",
+      "artifactName": "Roger-Setup-${version}.${ext}"
     }
   },
   "allowScripts": {
