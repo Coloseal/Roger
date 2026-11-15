@@ -211,6 +211,7 @@
   .linkbtn:hover { color: var(--text); }
 
   /* ---- phone / tablet (touch): a big hold-to-talk button docked at the bottom, easy to hit with a thumb ---- */
+  body.web #bar { cursor: pointer; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }   /* computer view in a browser: click and hold works too */
   body.touch { overscroll-behavior: none; }
   body.touch #app { padding-top: env(safe-area-inset-top); }
   body.touch .talk { order: 99; border-bottom: 0; border-top: 1px solid var(--line); padding: 10px 12px calc(12px + env(safe-area-inset-bottom)); }
@@ -252,6 +253,8 @@
       <button class="btn" type="submit">Sign in</button>
     </div>
     <div class="err" id="loginErr"></div>
+    <button class="linkbtn hidden" id="viewLink" type="button" style="margin-top:14px"></button>
+    <p class="note hidden" id="iosTip" style="margin-top:14px">On iPhone: tap the Share button, then <b>Add to Home Screen</b>, and open Roger from there. It works best that way.</p>
   </form>
 </div>
 
@@ -393,6 +396,20 @@
         <div class="row" style="margin-top:10px"><span class="note" style="flex:1;margin:0">Back only hides Roger and keeps it running. This closes it completely.</span><button class="ghost" id="quitApp" type="button">Close Roger</button></div>
         <p class="note" id="appVer" style="margin-top:10px"></p>
       </div>
+      <div id="viewBox" class="hidden">
+        <h3>View</h3>
+        <select id="selView">
+          <option value="auto">Automatic (phone view on phones, computer view on computers)</option>
+          <option value="phone">Phone view: big hold-to-talk button</option>
+          <option value="pc">Computer view: hold Space, or click and hold the bar</option>
+        </select>
+        <p class="note" id="viewNote">Switching reloads Roger. You stay signed in.</p>
+      </div>
+      <div id="iosBox" class="hidden">
+        <h3>On your iPhone</h3>
+        <p class="note" id="iosInstall">Install Roger: tap the Share button in Safari, then <b>Add to Home Screen</b>. It then opens full-screen like an app and updates itself whenever you open it.</p>
+        <p class="note">Keep Roger open on the screen. iPhone pauses web apps when you lock the phone or switch to another app, so you won't hear or talk until you come back.</p>
+      </div>
       <div id="installBox" class="hidden">
         <h3>Install</h3>
         <div class="row"><span class="note" style="flex:1;margin:0">Add Roger to your home screen so it opens like a normal app.</span><button class="ghost" id="installBtn" type="button">Install app</button></div>
@@ -509,9 +526,18 @@
   const IS_DESKTOP = !!window.bhr;
   // Phones and tablets have no keyboard: the status bar becomes a big hold-to-talk button. (Add ?touch=1 to force it on any device.)
   const APP = (!IS_DESKTOP && window.RogerApp) || null;           // the Roger Android app (a thin shell around this page)
-  const IS_TOUCH = /[?&]touch=1/.test(location.search) || !!APP || /RogerAndroid/.test(navigator.userAgent) || (!IS_DESKTOP && window.matchMedia && matchMedia('(pointer: coarse)').matches);
+  // The view can also be chosen by hand (login screen or Settings → General): 'phone' or 'pc'. Default 'auto' = detect.
+  const VIEW = store.get('view', 'auto');
+  const IS_TOUCH = (() => {
+    if (APP) return true;                                                        // the Android app is always the phone view
+    if (!IS_DESKTOP && VIEW === 'phone') return true;
+    if (!IS_DESKTOP && VIEW === 'pc') return false;
+    return /[?&]touch=1/.test(location.search) || /RogerAndroid/.test(navigator.userAgent) || (!IS_DESKTOP && window.matchMedia && matchMedia('(pointer: coarse)').matches);
+  })();
+  const IS_WEB = !IS_DESKTOP && !APP;     // a normal browser tab or installed web app (iPhone, Mac, PC, Chromebook…)
   let touchLatched = false;               // tapped (not held): staying on air until the next tap
   if (IS_TOUCH) document.body.classList.add('touch');
+  else if (IS_WEB) document.body.classList.add('web');
 
   // ---------- settings ----------
   const SOUND_NAMES = { warn: 'Warning (2 beeps)', beep: 'Beep', chirp: 'Chirp', click: 'Click', tick: 'Tick', blip: 'Blip', low: 'Low', buzz: 'Buzz', double: 'Double', ding: 'Ding' };
@@ -920,7 +946,8 @@
   window.addEventListener('keyup', (e) => { if (e.code === 'Space') pttUp(); });
 
   // Phones: the status bar is the talk button. Hold = talk until you let go. A quick tap = stay on air, tap again to stop.
-  if (IS_TOUCH) {
+  // (In a browser's computer view the bar works the same with the mouse, as well as holding Space.)
+  if (IS_TOUCH || IS_WEB) {
     let downAt = 0, consumed = false, pressed = false;
     const pressStart = () => {
       if (pressed) return; pressed = true;
@@ -1488,7 +1515,7 @@
     if (touchLatched && ptt === 'idle') touchLatched = false;
     if (!online) { t = 'Reconnecting…'; label = 'Offline'; bar.className = 'off'; }
     else if (!isJ) { t = 'Join a channel'; label = 'Join a channel to talk'; bar.className = 'off'; }
-    else if (ptt === 'live') { t = 'On air'; color = 'var(--amber)'; label = IS_TOUCH ? (touchLatched ? 'On air · tap to stop' : 'On air · release to stop') : 'On air'; bar.className = 'live'; }
+    else if (ptt === 'live') { t = 'On air'; color = 'var(--amber)'; label = (IS_TOUCH || IS_WEB) ? (touchLatched ? (IS_TOUCH ? 'On air · tap to stop' : 'On air · click to stop') : 'On air · release to stop') : 'On air'; bar.className = 'live'; }
     else if (ptt === 'pending') { t = 'Keying up…'; color = 'var(--amber)'; label = 'On air'; bar.className = 'live'; }
     else if (ptt === 'rec') { t = `Busy — ${busyBy ? busyBy.name : 'someone'} · recording`; color = 'var(--amber)'; label = 'Recording · sends when clear'; bar.className = 'rec'; }
     else if (sending) { t = 'Sending your message…'; color = 'var(--amber)'; label = 'Sending…'; bar.className = 'live'; }
@@ -1821,6 +1848,7 @@
           dev: `Version ${v} · updates are checked in the installed app`,
           idle: `Version ${v}`, none: `Version ${v} · up to date`, checking: `Version ${v} · checking…`,
           downloading: `Downloading ${s.next || 'update'}… ${s.percent || 0}%`, ready: `Update ${s.next || ''} is ready`,
+          available: `Version ${v} · ${s.next || 'a new version'} is available (download it from the Roger page on GitHub)`,
           error: `Version ${v} · couldn't check${s.error ? ' (' + s.error + ')' : ''}`,
         }[s.state] || `Version ${v}`;
         $('updBox').classList.remove('hidden'); $('updStatus').textContent = text;
@@ -1867,8 +1895,32 @@
         call('setFloat', cfg.floatBtn, false); call('setVolKey', cfg.volKey);
       }
     } else {
-      $('hint').textContent = 'Hold Space to talk. If someone is talking, keep holding to record. It sends when they finish. (The Roger desktop app adds keys that work while you are in the game.)';
+      $('hint').textContent = 'Hold Space (or click and hold the bar above) to talk. If someone is talking, keep holding to record. It sends when they finish. (The Roger desktop app adds keys that work while you are in the game.)';
+      $('browserCtl').querySelector('.note').innerHTML = 'Hold <kbd>Space</kbd> to talk, or click and hold the big bar at the top. A quick click keeps you on air; click again to stop. Install the Roger desktop app to get keys that work while you\'re in the game.';
+      // Safari on a Mac asks about the microphone every time unless told otherwise.
+      if (/Safari/.test(navigator.userAgent) && !/Chrome|Chromium|Edg|OPR|Android/.test(navigator.userAgent) && !/iPhone|iPad|iPod/.test(navigator.userAgent)) {
+        const t = document.createElement('p'); t.className = 'note';
+        t.textContent = 'Safari tip: choose Allow when it asks for the microphone. To stop it asking each time, open Safari → Settings → Websites → Microphone and set this site to Allow. File → Add to Dock turns Roger into its own app window.';
+        $('browserCtl').append(t);
+      }
       window.addEventListener('blur', pttUp);       // in a normal browser tab, let go if the tab loses focus
+    }
+    // Choose the view by hand (works on any browser; the desktop app and the Android app have their own fixed layout)
+    if (IS_WEB) {
+      $('viewBox').classList.remove('hidden');
+      $('selView').value = VIEW;
+      const setView = (v) => { store.set('view', v); location.reload(); };
+      $('selView').onchange = (e) => setView(e.target.value);
+      const vl = $('viewLink'); vl.classList.remove('hidden');
+      vl.textContent = IS_TOUCH ? 'Switch to computer view' : 'Switch to phone view';
+      vl.onclick = () => setView(IS_TOUCH ? 'pc' : 'phone');
+    }
+    // iPhone / iPad: Safari has no install button of its own, so explain "Add to Home Screen" (hidden once it's installed).
+    const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const STANDALONE = navigator.standalone === true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
+    if (IS_IOS) {
+      $('iosBox').classList.remove('hidden');
+      if (STANDALONE) $('iosInstall').classList.add('hidden'); else $('iosTip').classList.remove('hidden');
     }
     // Installable as an app (Chrome on Android shows "Install app"; this adds our own button too)
     let installEvt = null;

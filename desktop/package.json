@@ -1,39 +1,76 @@
 {
-  "name": "roger-desktop",
-  "version": "1.3.0",
-  "description": "Roger - push-to-talk comms for squads",
-  "main": "main.js",
-  "author": "Roger",
-  "scripts": {
-    "start": "electron .",
-    "dist": "electron-builder --win nsis --publish never"
-  },
-  "dependencies": {
-    "electron-updater": "^6.8.11"
-  },
-  "devDependencies": {
-    "electron": "^33.0.0",
-    "electron-builder": "^25.1.8"
-  },
-  "build": {
-    "appId": "com.roger.app",
-    "productName": "Roger",
-    "directories": { "output": "dist" },
-    "files": ["main.js", "preload.js", "overlay.html", "overlay-preload.js", "loading.html", "config.json", "icon.png", "icon.ico"],
-    "publish": [{ "provider": "github", "owner": "Coloseal", "repo": "Roger" }],
-    "win": { "target": "nsis", "icon": "icon.ico" },
-    "nsis": {
-      "oneClick": true,
-      "perMachine": false,
-      "runAfterFinish": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "installerIcon": "icon.ico",
-      "uninstallerIcon": "icon.ico",
-      "artifactName": "Roger-Setup-${version}.${ext}"
-    }
-  },
-  "allowScripts": {
-    "electron@33.4.11": true
-  }
+    "name":  "roger-desktop",
+    "version":  "1.3.0",
+    "description":  "Roger - push-to-talk comms for squads",
+    "main":  "main.js",
+    "author":  "Roger",
+    "scripts":  {
+                    "start":  "electron .",
+                    "dist":  "electron-builder --win nsis --publish never",
+                    "dist:mac":  "electron-builder --mac --universal --publish never"
+                },
+    "dependencies":  {
+                         "electron-updater":  "^6.8.11"
+                     },
+    "devDependencies":  {
+                            "electron":  "^33.0.0",
+                            "electron-builder":  "^25.1.8"
+                        },
+    "build":  {
+                  "appId":  "com.roger.app",
+                  "productName":  "Roger",
+                  "directories":  {
+                                      "output":  "dist"
+                                  },
+                  "files":  [
+                                "main.js",
+                                "preload.js",
+                                "overlay.html",
+                                "overlay-preload.js",
+                                "loading.html",
+                                "config.json",
+                                "icon.png",
+                                "icon.ico"
+                            ],
+                  "publish":  [
+                                  {
+                                      "provider":  "github",
+                                      "owner":  "Coloseal",
+                                      "repo":  "Roger"
+                                  }
+                              ],
+                  "win":  {
+                              "target":  "nsis",
+                              "icon":  "icon.ico"
+                          },
+                  "nsis":  {
+                               "oneClick":  true,
+                               "perMachine":  false,
+                               "runAfterFinish":  true,
+                               "createDesktopShortcut":  true,
+                               "createStartMenuShortcut":  true,
+                               "installerIcon":  "icon.ico",
+                               "uninstallerIcon":  "icon.ico",
+                               "artifactName":  "Roger-Setup-${version}.${ext}"
+                           },
+                  "mac":  {
+                              "target":  [
+                                             "dmg",
+                                             "zip"
+                                         ],
+                              "category":  "public.app-category.social-networking",
+                              "icon":  "icon.png",
+                              "identity":  null,
+                              "artifactName":  "Roger-${version}-mac.${ext}",
+                              "extendInfo":  {
+                                                 "NSMicrophoneUsageDescription":  "Roger needs the microphone so your squad can hear you when you talk."
+                                             }
+                          },
+                  "dmg":  {
+                              "artifactName":  "Roger-${version}-mac.${ext}"
+                          }
+              },
+    "allowScripts":  {
+                         "electron@33.4.11":  true
+                     }
 }

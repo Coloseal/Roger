@@ -4,7 +4,8 @@
 // RegisterHotKey only reports key presses, so the global key is press-to-talk / press-again-to-stop.
 // (Holding Space inside the app window is still true hold-to-talk.)
 
-const { app, BrowserWindow, ipcMain, session, shell, Menu, net, globalShortcut, screen, Tray } = require('electron');
+const { app, BrowserWindow, ipcMain, session, shell, Menu, net, globalShortcut, screen, Tray, dialog, nativeImage, systemPreferences } = require('electron');
+const IS_MAC = process.platform === 'darwin';
 const path = require('path');
 const fs = require('fs');
 
@@ -203,11 +204,21 @@ function initUpdater() {
   try {
     ({ autoUpdater: updater } = require('electron-updater'));
   } catch (e) { console.error('updater unavailable:', e.message); return; }
-  updater.autoDownload = true;
-  updater.autoInstallOnAppQuit = true;
+  // Windows installs updates by itself. The Mac version isn't code-signed (that needs a paid Apple account), and macOS refuses
+  // to self-install unsigned updates, so on a Mac we just tell you a new version exists and open the download page.
+  updater.autoDownload = !IS_MAC;
+  updater.autoInstallOnAppQuit = !IS_MAC;
   if (testFeed) { updater.forceDevUpdateConfig = true; updater.setFeedURL({ provider: 'generic', url: testFeed }); }
   updater.on('checking-for-update', () => setUpd({ state: 'checking', error: '' }));
-  updater.on('update-available', (i) => { setUpd({ state: 'downloading', next: i.version, percent: 0 }); updSplash({ msg: `Downloading version ${i.version}…`, pct: 0 }); });
+  updater.on('update-available', (i) => {
+    if (IS_MAC) {
+      setUpd({ state: 'available', next: i.version });
+      dialog.showMessageBox({ type: 'info', buttons: ['Download', 'Later'], defaultId: 0, title: 'Roger update', message: `Roger ${i.version} is available.`, detail: 'Download the new version, open it, and drag Roger into Applications (replace the old one).' })
+        .then((r) => { if (r.response === 0) shell.openExternal('https://github.com/Coloseal/Roger/releases/latest'); }).catch(() => {});
+      return;
+    }
+    setUpd({ state: 'downloading', next: i.version, percent: 0 }); updSplash({ msg: `Downloading version ${i.version}…`, pct: 0 });
+  });
   updater.on('update-not-available', () => setUpd({ state: 'none' }));
   updater.on('download-progress', (p) => { const pc = Math.round(p.percent || 0); setUpd({ state: 'downloading', percent: pc }); updSplash({ msg: `Downloading version ${updState.next || ''}… ${pc}%`, pct: pc }); });
   updater.on('update-downloaded', (i) => {
@@ -261,7 +272,8 @@ function buildTrayMenu() {
 }
 function buildTray() {
   try {
-    tray = new Tray(path.join(__dirname, 'icon.ico'));
+    // Windows uses the .ico; the Mac menu bar needs a small PNG.
+    tray = new Tray(IS_MAC ? nativeImage.createFromPath(path.join(__dirname, 'icon.png')).resize({ width: 18, height: 18 }) : path.join(__dirname, 'icon.ico'));
     tray.setToolTip('Roger');
     tray.setContextMenu(buildTrayMenu());
     tray.on('click', () => { if (win && !win.isDestroyed() && win.isVisible() && win.isFocused()) win.hide(); else showWindow(); });
@@ -345,13 +357,16 @@ app.whenReady().then(() => {
     cb(allowed(perm) && (u.startsWith(SERVER_ORIGIN) || u.startsWith('file:')));
   });
   session.defaultSession.setPermissionCheckHandler((_wc, perm) => allowed(perm));
-  hotkeys = settings.hotkeys || { talk: settings.accel || 'F8', repeat: 'Shift+F8' };
+  // (On a Mac the F-keys are media keys by default, so the starting keys are Option-based. Change them in Settings → Control.)
+  hotkeys = settings.hotkeys || (IS_MAC ? { talk: 'Alt+Space', repeat: 'Alt+Shift+Space' } : { talk: settings.accel || 'F8', repeat: 'Shift+F8' });
+  if (IS_MAC) { try { systemPreferences.askForMediaAccess('microphone'); } catch {} }   // macOS asks once for microphone access
   slotScheme = Object.prototype.hasOwnProperty.call(SLOT_SCHEMES, settings.slotScheme) ? settings.slotScheme : 'none';
   registerAll();
   buildTray();
   createWindow();
   initUpdater();
 });
+app.on('activate', () => showWindow());                  // Mac: clicking the Dock icon brings the window back
 app.on('second-instance', () => showWindow());          // launching Roger again brings the (hidden) window back
 app.on('window-all-closed', () => { if (!tray) app.quit(); });
 app.on('before-quit', () => {
