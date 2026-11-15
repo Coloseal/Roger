@@ -70,6 +70,7 @@
   .pc-title b { font-size: 16px; letter-spacing: .02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .pc-title span { font-family: var(--mono); font-size: 11px; color: var(--dim); }
   .pc-desc { color: var(--dim); font-size: 12px; margin-bottom: 8px; }
+  .pc-mode { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
   .pc-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
   #pcFilter { margin-bottom: 8px; }
   .pm { display: grid; grid-template-columns: 30px 1fr; align-items: center; column-gap: 10px; padding: 7px 9px; margin-bottom: 5px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
@@ -199,6 +200,9 @@
   .hitem .t { font-family: var(--mono); color: var(--dim); font-size: 11px; flex: none; }
   .hitem .f { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .hitem .d { font-family: var(--mono); color: var(--amber); font-size: 11px; flex: none; }
+  .resume-who { font-size: 15px; margin: 4px 0 2px; } .resume-who b { color: var(--accent); }
+  .linkbtn { display: block; width: 100%; margin-top: 10px; padding: 6px; border: 0; background: transparent; color: var(--dim); font-size: 12px; text-decoration: underline; }
+  .linkbtn:hover { color: var(--text); }
 </style>
 </head>
 <body>
@@ -208,13 +212,23 @@
     <h1><span class="logo">R</span>Roger</h1>
     <p>Private comms. Sign in with the account a moderator gave you.</p>
     <div class="setupwarn hidden" id="setupWarn">This server isn't set up yet: no admin account exists. The owner needs to set ADMIN_USER and ADMIN_PASSWORD on the host.</div>
-    <label for="username">Username</label>
-    <input type="text" id="username" maxlength="24" autocomplete="username" autocapitalize="off" spellcheck="false" required>
-    <label for="password">Password</label>
-    <input type="password" id="password" maxlength="200" autocomplete="current-password" required>
-    <label for="callsign">Callsign <span style="text-transform:none;letter-spacing:0">(the name others see)</span></label>
-    <input type="text" id="callsign" maxlength="20" autocomplete="off" placeholder="e.g. Viper-1" required>
-    <button class="btn" type="submit">Sign in</button>
+    <!-- You signed in on this device before: just press Join (your password is never stored here) -->
+    <div id="resumeBox" class="hidden">
+      <div class="resume-who">Welcome back, <b id="resumeUser"></b></div>
+      <label for="resumeCall">Callsign <span style="text-transform:none;letter-spacing:0">(the name others see)</span></label>
+      <input type="text" id="resumeCall" maxlength="20" autocomplete="off" placeholder="e.g. Viper-1">
+      <button class="btn" id="joinBtn" type="button">Join</button>
+      <button class="linkbtn" id="otherBtn" type="button">Not you? Sign in as someone else</button>
+    </div>
+    <div id="formBox">
+      <label for="username">Username</label>
+      <input type="text" id="username" maxlength="24" autocomplete="username" autocapitalize="off" spellcheck="false" required>
+      <label for="password">Password</label>
+      <input type="password" id="password" maxlength="200" autocomplete="current-password" required>
+      <label for="callsign">Callsign <span style="text-transform:none;letter-spacing:0">(the name others see)</span></label>
+      <input type="text" id="callsign" maxlength="20" autocomplete="off" placeholder="e.g. Viper-1" required>
+      <button class="btn" type="submit">Sign in</button>
+    </div>
     <div class="err" id="loginErr"></div>
   </form>
 </div>
@@ -262,6 +276,16 @@
       <div class="pc-title"><b id="pcName"></b><span id="pcCount"></span></div>
     </div>
     <div id="pcDesc" class="pc-desc hidden"></div>
+    <div class="pc-mode">
+      <span class="tg" id="pcModeTag"></span>
+      <span class="note" id="pcModeNote" style="margin:0"></span>
+    </div>
+    <div class="row hidden" id="pcModeCtl" style="margin-bottom:8px">
+      <select id="pcMode" title="Moderators can change how this channel works">
+        <option value="queue">One at a time (people wait their turn)</option>
+        <option value="open">Open net (everyone can talk at once)</option>
+      </select>
+    </div>
     <div class="pc-actions">
       <button class="ghost" id="pcJoin" type="button">Join</button>
       <button class="ghost" id="pcTx" type="button">Talk on this channel</button>
@@ -328,7 +352,7 @@
 
     <!-- General -->
     <div class="tabp" data-p="general">
-      <label class="chk"><input type="checkbox" id="cAutoSign"> Sign in automatically when Roger starts</label>
+      <label class="chk"><input type="checkbox" id="cAutoSign"> Join automatically when Roger starts (skip the Join button)</label>
       <h3>When the channel is busy</h3>
       <select id="selBusy">
         <option value="queue">Record my message and send it after they finish</option>
@@ -449,7 +473,7 @@
     ['outgoingEnd', 'Outgoing message ended'], ['busy', 'Channel busy'], ['queued', 'Message queued'], ['connError', 'Connection lost'],
   ];
   const DEF_CFG = {
-    autoSignIn: IS_DESKTOP,
+    autoSignIn: false,                   // off by default: you see "Welcome back" and press Join (turn on in Settings to skip that)
     busyMode: 'queue',                   // 'queue' = record and send after they finish; 'warn' = just warn me
     alerts: {
       incoming: { on: true, snd: 'chirp' }, incomingEnd: { on: true, snd: 'tick' }, clear: { on: true, snd: 'click' },
@@ -459,6 +483,7 @@
     vox: { on: false, thr: 40, hang: 1.2 },
   };
   const saved = store.get('cfg2', {});
+  if ((saved.v || 1) < 2) { saved.autoSignIn = false; saved.v = 2; }   // one-time: the old default was "join automatically"; now you press Join
   const cfg = { ...DEF_CFG, ...saved, alerts: { ...DEF_CFG.alerts, ...(saved.alerts || {}) }, vox: { ...DEF_CFG.vox, ...(saved.vox || {}) } };
   const saveCfg = () => store.set('cfg2', cfg);
 
@@ -472,7 +497,6 @@
   let order = store.get('order2', []);   // your channel order: position 1, 2, 3… (also the favorite-hotkey slots)
   let chState = [];
   let prevTalkers = new Map();
-  let lastSpeaker = new Map();           // channel id -> callsign of whoever is talking
   let ptt = 'idle';                      // idle | pending (keying) | live | rec (channel busy, recording)
   let held = false;                      // is the talk control physically held / toggled on
   let queue = [];                        // audio captured before we hold the floor
@@ -549,7 +573,7 @@
     const now = performance.now();
     if (levelPct >= v.thr) voxLast = now;
     if (!voxActive) {
-      const c = chState.find((x) => x.name === tx), busy = !!(c && c.talker && me && c.talker !== me.id);
+      const c = chState.find((x) => x.name === tx), busy = busyIn(c);
       if (levelPct >= v.thr && ptt === 'idle' && me && joined.has(tx) && !(outbox && outbox.state !== 'wait') && !(busy && cfg.busyMode === 'warn')) {
         const pre = preroll.splice(0);
         voxActive = true; pttDown();
@@ -588,20 +612,27 @@
     return g;
   }
 
-  function playFrame(chId, buf) {
+  // Each speaker gets their own playback timeline, so several people talking at once in an open net are mixed
+  // (their audio overlaps) instead of being chopped together one chunk after another.
+  const idName = new Map();              // connection id -> callsign (for per-person volume)
+  function playFrame(chId, spkId, buf) {
     if (!ctx || !playBus) return;
     const pcm = new Int16Array(buf.buffer, buf.byteOffset, buf.byteLength >> 1);
     const ab = ctx.createBuffer(1, pcm.length, RATE);
     const d = ab.getChannelData(0);
     for (let i = 0; i < pcm.length; i++) d[i] = pcm[i] / 32768;
     const s = ctx.createBufferSource(); s.buffer = ab;
-    const who = lastSpeaker.get(chId);
+    const who = idName.get(spkId);
     s.connect(who ? spkGain(who) : playBus);
-    const now = ctx.currentTime;
-    let t = nextT.get(chId) || 0;
+    const now = ctx.currentTime, key = chId + ':' + spkId;
+    let t = nextT.get(key) || 0;
     if (t < now + 0.02) t = now + 0.09;
-    s.start(t); nextT.set(chId, t + ab.duration);
+    s.start(t); nextT.set(key, t + ab.duration);
   }
+  // Helpers for channel state: who is talking, and is the channel "busy" for me?
+  function talkersOf(c) { return (c && (c.talkers || (c.talker ? [c.talker] : []))) || []; }
+  // Busy only in the one-at-a-time mode. In an open net nobody is ever blocked.
+  function busyIn(c) { return !!(c && c.mode !== 'open' && c.talker && me && c.talker !== me.id); }
 
   function tone(freq, dur, vol = 0.12, delay = 0, type = 'sine') {
     if (!ctx) return;
@@ -644,6 +675,7 @@
     $('loginErr').textContent = message || ''; $('password').value = '';
     $('adminBtn').classList.add('hidden'); $('toast').classList.add('hidden');
     if (IS_DESKTOP) window.bhr.overlay({ mode: 'off' });
+    setLoginMode();
   }
   const cancelOutboxQuiet = () => { outbox = null; };
   const KICK_TEXT = {
@@ -661,13 +693,15 @@
         const dv = new DataView(e.data);
         const chId = dv.getUint16(0);
         if (chId === 0xFFFF) { gotHistoryAudio(dv.getUint32(2), new Int16Array(e.data.slice(6))); return; }
-        playFrame(chId, new Uint8Array(e.data, 2));
+        playFrame(chId, dv.getUint32(2), new Uint8Array(e.data, 6));       // 6-byte header: channel + who is speaking
         return;
       }
       const m = JSON.parse(e.data);
       if (m.type === 'welcome') {
         me = { id: m.id, name: m.name, user: m.user || { username: '', role: 'user' }, storage: m.storage };
         store.set('name', m.name);
+        if (m.user && m.user.username) store.set('uname', m.user.username);
+        if (m.token) { token = m.token; store.set('tok', token); }        // a fresh 30-day sign-in every time you join
         $('meName').textContent = m.name;
         const rb = $('meRole'); rb.textContent = ROLE_LABEL[me.user.role] || (me.user.role === 'joint' ? 'JOINT' : ''); rb.classList.toggle('hidden', !rb.textContent);
         $('adminBtn').classList.toggle('hidden', !isStaff());
@@ -678,7 +712,7 @@
         }
         render();
       } else if (m.type === 'error') {
-        if (m.code === 'invalid_token') showLogin('Please sign in again.');
+        if (m.code === 'invalid_token') showLogin('Your login has changed or expired. Sign in again with your current username and password.');
         else if (m.code === 'callsign_taken') showLogin(`The callsign "${m.name}" is in use right now. Pick another.`, true);
       } else if (m.type === 'kicked_app') {
         showLogin(KICK_TEXT[m.reason] || 'You were signed out.' + (m.by ? ` (by ${m.by})` : ''));
@@ -687,6 +721,8 @@
         store.set('joined2', [...joined]); store.set('tx2', tx);
         toast(m.type === 'kicked' ? `${m.by || 'A moderator'} removed you from ${m.ch}. You can rejoin in ${m.minutes} min.` : `You're blocked from ${m.ch} for about ${m.minutes} more min.`);
         render();
+      } else if (m.type === 'mode_changed') {
+        toast(`${m.by || 'A moderator'} set ${m.ch} to ${m.mode === 'open' ? 'OPEN NET: everyone can talk at once' : 'one at a time'}.`, 'info');
       } else if (m.type === 'callsign_result') {
         if (m.ok) { me.name = m.name; store.set('name', m.name); $('meName').textContent = m.name; }
         const s = $('csStatus'); if (s) { s.textContent = m.ok ? 'Callsign changed.' : m.error; s.style.color = m.ok ? 'var(--green)' : 'var(--red)'; }
@@ -731,21 +767,26 @@
   }
 
   function onState(list) {
+    const mineId = me && me.id;
     for (const ch of list) {
-      const before = prevTalkers.get(ch.id), now = ch.talker, mine = me && me.id;
+      const othersNow = talkersOf(ch).filter((id) => id !== mineId).length, othersBefore = prevTalkers.get(ch.id) || 0;
       if (joined.has(ch.name)) {
-        if (!before && now && now !== mine) alertSnd('incoming');
-        if (before && !now && before !== mine) alertSnd('incomingEnd');
+        if (!othersBefore && othersNow) alertSnd('incoming');
+        if (othersBefore && !othersNow) alertSnd('incomingEnd');
       }
-      prevTalkers.set(ch.id, now);
-      if (now) { const who = ch.members.find((m) => m.id === now); if (who) lastSpeaker.set(ch.id, who.name); }
-      if (!now) nextT.delete(ch.id);
+      prevTalkers.set(ch.id, othersNow);
+      for (const m of ch.members) idName.set(m.id, m.name);
+    }
+    // forget playback timing for anyone who has stopped talking
+    for (const key of [...nextT.keys()]) {
+      const [cid, sid] = key.split(':').map(Number), c = list.find((x) => x.id === cid);
+      if (!c || !talkersOf(c).includes(sid)) nextT.delete(key);
     }
     chState = list;
     const mine = list.find((c) => c.name === tx);
-    if (ptt === 'live' && mine && mine.talker !== (me && me.id)) ptt = 'idle';
+    if (ptt === 'live' && mine && !talkersOf(mine).includes(mineId)) ptt = 'idle';
     // Still holding the button while the channel was busy, and it's clear now: go on air.
-    if (ptt === 'rec' && held && mine && !mine.talker) { ptt = 'pending'; send({ type: 'ptt_start', ch: tx }); }
+    if (ptt === 'rec' && held && mine && !busyIn(mine)) { ptt = 'pending'; send({ type: 'ptt_start', ch: tx }); }
     tryOutbox();
     render();
   }
@@ -755,7 +796,7 @@
     if (!outbox || outbox.state !== 'wait' || ptt !== 'idle' || !ws || ws.readyState !== 1) return;
     const ch = chState.find((c) => c.name === outbox.ch);
     if (!ch || !joined.has(ch.name)) { outbox = null; return; }
-    if (!ch.talker) { outbox.state = 'req'; send({ type: 'ptt_start', ch: outbox.ch }); }
+    if (!busyIn(ch)) { outbox.state = 'req'; send({ type: 'ptt_start', ch: outbox.ch }); }
   }
 
   async function sendOutbox() {
@@ -785,7 +826,7 @@
     if (outbox && outbox.state !== 'wait') { alertSnd('busy'); return; }      // a message is being sent right now
     if (ctx.state !== 'running') ctx.resume();
     const ch = txChan();
-    const busy = !!(ch && ch.talker && ch.talker !== me.id);
+    const busy = busyIn(ch);
     if (busy) { alertSnd('busy'); if (cfg.busyMode === 'warn') return; }     // two warning beeps, once per attempt
     held = true; queue = [];
     if (busy) { ptt = 'rec'; render(); return; }                              // busy: record, send when they finish
@@ -1110,6 +1151,7 @@
     created_faction: 'created faction', deleted_faction: 'deleted faction', deleted_user: 'deleted', disabled_user: 'disabled', enabled_user: 're-enabled',
     reset_password: 'reset the password of', set_role: 'changed the role of', kicked_from_channel: 'kicked from a channel:', kicked_from_app: 'signed out of Roger:',
     disabled_faction: 'switched off faction', enabled_faction: 'switched on faction', changed_own_password: 'changed their own password',
+    set_channel_mode: 'changed the mode of channel',
   };
   function renderAdminLog(body) {
     const card = el('div', 'ad-card'); card.append(el('h4', '', 'Recent activity'));
@@ -1153,16 +1195,21 @@
     $('pcName').textContent = name;
     $('pcCount').textContent = c ? `${members.length} ${members.length === 1 ? 'person' : 'people'} on this channel` : 'This channel is empty or closed';
     const d = $('pcDesc'); if (c && c.desc) { d.textContent = c.desc; d.classList.remove('hidden'); } else d.classList.add('hidden');
+    const openNet = !!(c && c.mode === 'open');
+    $('pcModeTag').textContent = openNet ? 'OPEN NET' : 'ONE AT A TIME'; $('pcModeTag').className = 'tg ' + (openNet ? 'on' : '');
+    $('pcModeNote').textContent = openNet ? 'Everyone can talk at once; you hear them mixed.' : 'One person talks at a time; others queue.';
+    $('pcModeCtl').classList.toggle('hidden', !(isStaff() && c));
+    if (document.activeElement !== $('pcMode')) $('pcMode').value = openNet ? 'open' : 'queue';
     $('pcJoin').textContent = isJ ? 'Leave channel' : 'Join channel';
     $('pcTx').classList.toggle('hidden', !isJ); $('pcHist').classList.toggle('hidden', !isJ);
     $('pcTx').textContent = tx === name ? '✓ Your talk channel' : 'Talk on this channel';
     const q = $('pcFilter').value.trim().toLowerCase();
     const list = members.filter((m) => !q || m.name.toLowerCase().includes(q))
-      .sort((a, b) => ((c.talker === b.id) - (c.talker === a.id)) || ((b.id === myId) - (a.id === myId)) || a.name.localeCompare(b.name));
+      .sort((a, b) => ((talkersOf(c).includes(b.id)) - (talkersOf(c).includes(a.id))) || ((b.id === myId) - (a.id === myId)) || a.name.localeCompare(b.name));
     const box = $('pcList'), scroll = $('pageChannel').scrollTop; box.replaceChildren();
     if (!list.length) box.append(el('p', 'note', members.length ? 'No one matches that search.' : 'Nobody is on this channel right now.'));
     for (const m of list) {
-      const isMe = m.id === myId, talking = !!c && c.talker === m.id;
+      const isMe = m.id === myId, talking = !!c && talkersOf(c).includes(m.id);
       const row = el('div', 'pm' + (isMe ? ' me' : '') + (talking ? ' talk' : ''));
       row.append(el('div', 'av', (m.name[0] || '?').toUpperCase()));
       const nm = el('div', 'nm'); nm.append(el('b', '', m.name));
@@ -1195,6 +1242,7 @@
   }
   window.addEventListener('pointerup', () => { if (pcDrag) { pcDrag = false; renderChannelPage(true); } });
   $('pcFilter').oninput = () => renderChannelPage(true);
+  $('pcMode').onchange = (e) => { const n = curPage().name; if (n) send({ type: 'mod_set_mode', ch: n, mode: e.target.value }); };
   $('pcJoin').onclick = () => { const n = curPage().name; if (joined.has(n)) setJoined(n, false); else tryJoin(n); renderChannelPage(true); };
   $('pcTx').onclick = () => { selectTx(curPage().name); renderChannelPage(true); };
   $('pcHist').onclick = () => go({ p: 'history', name: curPage().name });
@@ -1263,13 +1311,14 @@
     const ordered = [...order, ...[...names].filter((n) => !joined.has(n))];     // joined first (your order), then the rest
     for (const name of ordered) {
       const c = chState.find((x) => x.name === name);
-      const isJoined = joined.has(name), talker = c && c.talker && c.members.find((m) => m.id === c.talker);
+      const tk = talkersOf(c), talker = tk.length ? c.members.find((m) => m.id === tk[0]) : null, isJoined = joined.has(name);
       const pos = order.indexOf(name) + 1;
       const row = el('div', 'ch' + (isJoined ? ' joined' : '') + (tx === name && isJoined ? ' tx' : '') + (talker ? ' talking' : ''));
       if (c && c.desc) row.title = c.desc;
       const nm = el('div', 'nm'); nm.append(el('b', '', name));
       const key = isJoined ? slotKeyLabel(pos) : '';
-      nm.append(el('small', '', talker ? `🔊 ${talker.name}` : `${c ? c.members.length : 0} on channel` + (key ? ` · ${key}` : '')));
+      const openTag = c && c.mode === 'open' ? ' · OPEN NET' : '';
+      nm.append(el('small', '', talker ? `🔊 ${talker.name}${tk.length > 1 ? ` +${tk.length - 1}` : ''}${openTag}` : `${c ? c.members.length : 0} on channel` + (key ? ` · ${key}` : '') + openTag));
       const tog = el('button', 'tog', isJoined ? 'Leave' : 'Join');
       tog.onclick = (e) => { e.stopPropagation(); if (isJoined) setJoined(name, false); else tryJoin(name); };
       // One click = join / select (after a brief pause so a double-click doesn't join by accident); double-click = see who's in it.
@@ -1309,7 +1358,8 @@
 
     const ch = txChan(), isJ = joined.has(tx), online = ws && ws.readyState === 1;
     const myId = me ? me.id : -1;
-    const busyBy = ch && ch.talker && ch.talker !== myId ? ch.members.find((m) => m.id === ch.talker) : null;
+    const busyBy = busyIn(ch) ? ch.members.find((m) => m.id === ch.talker) : null;
+    const isOpen = !!(ch && ch.mode === 'open'), othersTalking = talkersOf(ch).filter((id) => id !== myId).length;
     $('txch').textContent = isJ ? tx : '—';
     const dsc = $('txdesc');
     if (isJ && ch && ch.desc) { dsc.textContent = ch.desc; dsc.classList.remove('hidden'); } else dsc.classList.add('hidden');
@@ -1325,6 +1375,10 @@
     else if (ptt === 'rec') { t = `Busy — ${busyBy ? busyBy.name : 'someone'} · recording`; color = 'var(--amber)'; label = 'Recording · sends when clear'; bar.className = 'rec'; }
     else if (sending) { t = 'Sending your message…'; color = 'var(--amber)'; label = 'Sending…'; bar.className = 'live'; }
     else if (busyBy) { t = `Busy — ${busyBy.name}`; color = 'var(--red)'; label = cfg.busyMode === 'warn' ? 'Channel busy' : `Busy · hold ${keyName} to queue`; bar.className = 'busy'; }
+    else if (isOpen) {                                              // open net: never blocked, even while others are talking
+      t = othersTalking ? `Open net · ${othersTalking} talking` : 'Open net · clear'; color = 'var(--green)';
+      label = cfg.vox.on ? 'OPEN NET · VOX · just speak' : `Open net · hold ${keyName} to talk`; bar.className = cfg.vox.on ? 'vox' : '';
+    }
     else if (cfg.vox.on) { t = 'Channel clear'; color = 'var(--green)'; label = 'VOX · just speak'; bar.className = 'vox'; }
     else { t = 'Channel clear'; color = 'var(--green)'; label = `Ready · hold ${keyName} to talk`; }
     $('status').textContent = t; $('status').style.color = color; bar.textContent = label;
@@ -1340,10 +1394,10 @@
     if (ch && isJ) {
       // Busy channels have too many people to list here: show the talker and you first, then a "+N more" link to the full list.
       const LIMIT = 8;
-      const sorted = [...ch.members].sort((a, b) => ((ch.talker === b.id) - (ch.talker === a.id)) || ((b.id === myId) - (a.id === myId)) || a.name.localeCompare(b.name));
+      const sorted = [...ch.members].sort((a, b) => ((talkersOf(ch).includes(b.id)) - (talkersOf(ch).includes(a.id))) || ((b.id === myId) - (a.id === myId)) || a.name.localeCompare(b.name));
       for (const m of sorted.slice(0, LIMIT)) {
         const isMe = m.id === myId;
-        ro.append(el('li', (isMe ? 'me ' : '') + (ch.talker === m.id ? 'talk' : ''), m.name + (isMe ? ' (you)' : '')));
+        ro.append(el('li', (isMe ? 'me ' : '') + (talkersOf(ch).includes(m.id) ? 'talk' : ''), m.name + (isMe ? ' (you)' : '')));
       }
       if (sorted.length > LIMIT) {
         const more = el('li', 'more', `+${sorted.length - LIMIT} more ›`);
@@ -1363,7 +1417,11 @@
     if (ptt === 'live' || (outbox && outbox.state === 'send')) return { mode: 'tx', name: me ? me.name : '', channel: ptt === 'live' ? tx : outbox.ch };
     for (const name of joinedList()) {
       const c = chState.find((x) => x.name === name);
-      if (c && c.talker && me && c.talker !== me.id) { const w = c.members.find((m) => m.id === c.talker); return { mode: 'rx', name: w ? w.name : 'Someone', channel: name }; }
+      const others = talkersOf(c).filter((id) => me && id !== me.id);
+      if (others.length) {                                          // in an open net several people can be talking: "Name +2"
+        const w = c.members.find((m) => m.id === others[0]);
+        return { mode: 'rx', name: (w ? w.name : 'Someone') + (others.length > 1 ? ` +${others.length - 1}` : ''), channel: name };
+      }
     }
     return { mode: 'off' };
   }
@@ -1631,8 +1689,23 @@
   setInterval(() => { if (wantOnline) fetch('/health', { cache: 'no-store' }).catch(() => {}); }, 4 * 60 * 1000);
 
   // ---------- start ----------
-  $('username').value = store.get('uname', '');
-  $('callsign').value = store.get('name', '');
+  // Signed in on this device before? Show "Welcome back" with a Join button instead of the full form.
+  // The saved sign-in is a token, not your password. If your account was reset, the token stops working,
+  // the app tells you, and the next successful sign-in REPLACES what was saved.
+  function setLoginMode() {
+    const resume = !!(token && store.get('uname', ''));
+    $('resumeBox').classList.toggle('hidden', !resume); $('formBox').classList.toggle('hidden', resume);
+    $('username').value = store.get('uname', ''); $('callsign').value = store.get('name', '');
+    if (resume) { $('resumeUser').textContent = store.get('uname', ''); $('resumeCall').value = store.get('name', '') || store.get('uname', ''); }
+  }
+  $('joinBtn').onclick = async () => {
+    const name = $('resumeCall').value.trim() || store.get('uname', '');
+    store.set('name', name); $('loginErr').textContent = '';
+    await startSession();
+  };
+  $('resumeCall').onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); $('joinBtn').click(); } };
+  $('otherBtn').onclick = () => { token = ''; store.set('tok', ''); store.set('uname', ''); store.set('name', ''); $('loginErr').textContent = ''; setLoginMode(); $('username').focus(); };
+  setLoginMode();
 
   async function startSession() {                       // microphone + connect (we already hold a valid sign-in token)
     try {

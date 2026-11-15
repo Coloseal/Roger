@@ -46,12 +46,16 @@ let nextChannelId = 1;
 const clients = new Map();   // connection id -> client
 const channels = new Map();  // name -> channel
 const bans = new Map();      // "userId|CHANNEL" -> time the block ends
+// Channel modes (set by moderators, remembered in the database):
+//   'queue' = one person talks at a time; others wait their turn (like a real radio)   <- default
+//   'open'  = open net: everyone can talk at the same time and you hear them all mixed together
+const modes = {};            // channel name -> 'open' (only open ones are stored)
 
 function getChannel(name, isDefault = false, desc = '') {
   let ch = channels.get(name);
   if (!ch) {
     if (channels.size >= MAX_CHANNELS) return null;
-    ch = { id: nextChannelId++, name, isDefault, desc, members: new Set(), talker: null, timer: null };
+    ch = { id: nextChannelId++, name, isDefault, desc, members: new Set(), talkers: new Set(), mode: modes[name] === 'open' ? 'open' : 'queue' };
     channels.set(name, ch);
   }
   return ch;
@@ -112,7 +116,9 @@ function snapshot(forStaff) {
     name: ch.name,
     desc: ch.desc || '',
     restricted: ch.isDefault && ch.name !== 'RADIO CHECK',   // preset operational channels: only join if your element is listed
-    talker: ch.talker ? ch.talker.id : null,
+    mode: ch.mode,
+    talker: ch.talkers.size ? [...ch.talkers][0].id : null,       // the first one talking (in queue mode, the only one)
+    talkers: [...ch.talkers].map((c) => c.id),                    // everyone talking right now (several in an open net)
     members: [...ch.members].filter((c) => c.user).map((c) => memberView(c, forStaff)),
   }));
 }
@@ -127,9 +133,9 @@ const sendTo = (c, obj) => { if (c.ws.readyState === 1) c.ws.send(JSON.stringify
 function notifyStaff(obj) { for (const c of clients.values()) if (isStaff(c)) sendTo(c, obj); }
 
 function releaseFloor(ch, client) {
-  if (ch.talker !== client) return;
-  clearTimeout(ch.timer);
-  ch.talker = null;
+  if (!ch.talkers.has(client)) return;
+  clearTimeout(client.talkTimer);
+  ch.talkers.delete(client);
   client.talkingIn = null;
   finalizeRecording(client);
 }
@@ -236,6 +242,8 @@ async function handleHello(client, msg) {
   store.saveUser(user).catch((e) => console.error('save failed:', e.message));
   sendTo(client, {
     type: 'welcome', id: client.id, name, maxTalkMs: MAX_TALK_MS,
+    token: mintToken(user),                                            // a fresh 30-day sign-in each time, so regulars never have to type their password
+
     user: { username: user.username, role: user.role, title: user.title || '', faction: accounts.factionName(user) },
     storage: isStaff(client) ? store.kind : undefined,
   });
@@ -285,11 +293,12 @@ wss.on('connection', (ws) => {
     // Binary = one chunk of 16 kHz mono Int16 PCM from the current talker.
     if (isBinary) {
       const ch = client.talkingIn;
-      if (!client.user || !ch || ch.talker !== client) return;
+      if (!client.user || !ch || !ch.talkers.has(client)) return;
       client.lastFrame = Date.now();
-      const out = Buffer.allocUnsafe(2 + data.length);
-      out.writeUInt16BE(ch.id, 0);
-      data.copy ? data.copy(out, 2) : Buffer.from(data).copy(out, 2);
+      // 6-byte header: which channel (2 bytes) + WHO is speaking (4 bytes), so several speakers in an open net stay separate
+      const out = Buffer.allocUnsafe(6 + data.length);
+      out.writeUInt16BE(ch.id, 0); out.writeUInt32BE(client.id, 2);
+      data.copy ? data.copy(out, 6) : Buffer.from(data).copy(out, 6);
       for (const m of ch.members) if (m !== client && m.ws.readyState === 1) m.ws.send(out, { binary: true });
       if (client.rec && client.rec.bytes < MAX_TALK_MS * 32) { client.rec.chunks.push(Buffer.from(data)); client.rec.bytes += data.length; }
       return;
@@ -325,16 +334,12 @@ wss.on('connection', (ws) => {
       const ch = channels.get(String(msg.ch));
       if (!ch || !ch.members.has(client)) return;
       if (client.talkingIn) releaseFloor(client.talkingIn, client);
-      if (ch.talker && ch.talker !== client) { sendTo(client, { type: 'denied', ch: ch.name, by: ch.talker.name }); return; }
-      ch.talker = client; client.talkingIn = ch; client.lastFrame = Date.now();
+      if (ch.mode !== 'open' && ch.talkers.size && !ch.talkers.has(client)) { sendTo(client, { type: 'denied', ch: ch.name, by: [...ch.talkers][0].name }); return; }
+      ch.talkers.add(client); client.talkingIn = ch; client.lastFrame = Date.now();
       client.rec = { ch, chunks: [], bytes: 0, ts: Date.now() };
-      clearTimeout(ch.timer);
-      ch.timer = setTimeout(() => {
-        if (ch.talker) {
-          const t = ch.talker; releaseFloor(ch, t);
-          sendTo(t, { type: 'timeout', ch: ch.name });
-          broadcastState();
-        }
+      clearTimeout(client.talkTimer);
+      client.talkTimer = setTimeout(() => {                         // nobody can hold the channel forever
+        if (ch.talkers.has(client)) { releaseFloor(ch, client); sendTo(client, { type: 'timeout', ch: ch.name }); broadcastState(); }
       }, MAX_TALK_MS);
       sendTo(client, { type: 'granted', ch: ch.name });
       broadcastState();
@@ -365,6 +370,19 @@ wss.on('connection', (ws) => {
       bans.set(`${target.user.id}|${ch.name}`, Date.now() + KICK_BLOCK_MS);
       sendTo(target, { type: 'kicked', ch: ch.name, by: client.name, minutes: KICK_BLOCK_MS / 60000 });
       store.addAudit(client.user.username, 'kicked_from_channel', target.user.username, ch.name);
+      broadcastState(); notifyStaff({ type: 'admin_changed' });
+    } else if (msg.type === 'mod_set_mode') {
+      // Moderators switch a channel between "one at a time" and "open net" (everyone can talk at once).
+      const ch = channels.get(String(msg.ch)), mode = msg.mode === 'open' ? 'open' : 'queue';
+      if (!isStaff(client) || !ch || ch.mode === mode) return;
+      ch.mode = mode;
+      if (mode === 'queue' && ch.talkers.size > 1) {                    // going back to one-at-a-time: the earliest talker keeps the channel
+        for (const t of [...ch.talkers].slice(1)) { releaseFloor(ch, t); sendTo(t, { type: 'timeout', ch: ch.name }); }
+      }
+      if (mode === 'open') modes[ch.name] = 'open'; else delete modes[ch.name];
+      store.setMeta('channel_modes', JSON.stringify(modes)).catch((e) => console.error('could not save channel modes:', e.message));
+      store.addAudit(client.user.username, 'set_channel_mode', ch.name, mode === 'open' ? 'open net' : 'one at a time');
+      for (const m of ch.members) sendTo(m, { type: 'mode_changed', ch: ch.name, mode, by: client.name });
       broadcastState(); notifyStaff({ type: 'admin_changed' });
     } else if (msg.type === 'mod_kick_app') {
       const target = clients.get(Number(msg.id));
@@ -405,11 +423,12 @@ setInterval(() => {
   const now = Date.now();
   let changed = false;
   for (const ch of channels.values()) {
-    const t = ch.talker;
-    if (t && now - (t.lastFrame || 0) > 3000) {
-      releaseFloor(ch, t);
-      sendTo(t, { type: 'timeout', ch: ch.name });
-      changed = true;
+    for (const t of [...ch.talkers]) {
+      if (now - (t.lastFrame || 0) > 3000) {
+        releaseFloor(ch, t);
+        sendTo(t, { type: 'timeout', ch: ch.name });
+        changed = true;
+      }
     }
   }
   if (changed) broadcastState();
@@ -422,6 +441,8 @@ async function main() {
   store = await createStore({ databaseUrl: process.env.DATABASE_URL, dataDir: process.env.DATA_DIR });
   if (!store.meta.secret) await store.setMeta('secret', crypto.randomBytes(32).toString('hex'));   // signs login tokens; kept with the accounts
   SECRET = store.meta.secret;
+  try { Object.assign(modes, JSON.parse(store.meta.channel_modes || '{}')); } catch {}      // remembered open-net channels
+  for (const ch of channels.values()) ch.mode = modes[ch.name] === 'open' ? 'open' : 'queue';
   accounts = new Accounts(store, { disconnectUser, onlineUserIds: () => new Set(authed().map((c) => c.user.id)) });
 
   const boot = await accounts.bootstrapAdmin(process.env.ADMIN_USER, process.env.ADMIN_PASSWORD);
