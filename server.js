@@ -183,7 +183,7 @@ function disconnectUser(userId, reason) {
 
 // ---- http ----------------------------------------------------------------
 const PUBLIC = path.join(__dirname, 'public');
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json', '.json': 'application/json', '.apk': 'application/vnd.android.package-archive' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json', '.json': 'application/json', '.apk': 'application/vnd.android.package-archive', '.txt': 'text/plain; charset=utf-8' };
 // Strict per account (6 wrong tries locks that account for 5 min); loose per IP address, because a whole squad
 // can share one connection and a few typos must not lock everyone out.
 const loginLimiter = new Limiter({ max: 6, lockMs: 5 * 60_000 });
@@ -254,6 +254,7 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('Permissions-Policy', 'microphone=(self), camera=(), geolocation=(), payment=(), usb=(), serial=(), display-capture=()');
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive, nosnippet');       // keep Roger out of Google and other search engines
   // Tell browsers to only ever use HTTPS for this site (only sent over HTTPS: the host's front door sets x-forwarded-proto).
   if (String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https') res.setHeader('Strict-Transport-Security', 'max-age=15552000');
   try {
