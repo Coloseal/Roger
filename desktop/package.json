@@ -1,6 +1,6 @@
 {
     "name":  "roger-desktop",
-    "version":  "1.3.0",
+    "version":  "1.4.0",
     "description":  "Roger - push-to-talk comms for squads",
     "main":  "main.js",
     "author":  "Roger",
@@ -13,8 +13,8 @@
                          "electron-updater":  "^6.8.11"
                      },
     "devDependencies":  {
-                            "electron":  "^33.0.0",
-                            "electron-builder":  "^25.1.8"
+                            "electron":  "^45.3.3",
+                            "electron-builder":  "^26.18.0"
                         },
     "build":  {
                   "appId":  "com.roger.app",
@@ -71,6 +71,6 @@
                           }
               },
     "allowScripts":  {
-                         "electron@33.4.11":  true
+                         "electron@45.3.3":  true
                      }
 }

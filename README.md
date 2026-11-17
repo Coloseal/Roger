@@ -3,12 +3,18 @@
 Push-to-talk radio for squad coordination. Players join channels (COMMAND, ALPHA SQUAD,
 MEDEVAC, ...) and talk one at a time, like a real radio.
 
-Two parts:
+**Safety and trust:** open source (MIT, see `LICENSE`). Read [PRIVACY-AND-SECURITY.md](PRIVACY-AND-SECURITY.md) for exactly what
+Roger does and doesn't do, and [SECURITY.md](SECURITY.md) to verify a download or report a problem. Each release lists the SHA-256
+of every file and its scan results. Third-party software: [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
+Parts:
 
 1. **Server** (`server.js`, `public/`) - hosted free on Render, always reachable by link.
 2. **Desktop app** (`desktop/`) - a Windows installer players just double-click. Everything it
    needs is inside; no Node, no setup. It also adds a **global talk key** that works while the
    game has focus. Players can alternatively just open the server's link in a browser.
+3. **Android app** (ndroid-app/) - a small shell around the same page, with a floating talk button and self-update.
+   The installer for it is served by the server at /Roger.apk.
 
 ## How talking works
 - The server gives each channel to one talker at a time. If someone is talking, your button

@@ -323,7 +323,8 @@ function createWindow() {
       autoplayPolicy: 'no-user-gesture-required',
     },
   });
-  win.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
+  // Links that open a new window go to your normal browser, and only ordinary web links (never file:, ms-msdt:, etc.).
+  win.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:\/\//i.test(url)) shell.openExternal(url); return { action: 'deny' }; });
   win.webContents.on('will-navigate', (e, url) => {
     if (!url.startsWith('file:') && new URL(url).origin !== SERVER_ORIGIN) e.preventDefault();
   });
