@@ -3,11 +3,13 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('bhr', {
   isDesktop: true,
   // global hotkeys: ids are 'talk', 'repeat', 'ch:<CHANNEL>', 'slot:<1-9>'
-  onHotkey: (cb) => ipcRenderer.on('hotkey', (_e, id) => cb(String(id))),
+  onHotkey: (cb) => ipcRenderer.on('hotkey', (_e, id, tracked) => cb(String(id), !!tracked)),   // tracked: the app will also tell us when the key is released
+  onHotkeyUp: (cb) => ipcRenderer.on('hotkey-up', (_e, id) => cb(String(id))),
   getHotkeys: () => ipcRenderer.invoke('hk-get'),
-  setHotkey: (id, k) => ipcRenderer.invoke('hk-set', String(id), {
-    code: String(k.code), ctrl: !!k.ctrl, alt: !!k.alt, shift: !!k.shift,
-  }),
+  setHotkey: (id, k) => ipcRenderer.invoke('hk-set', String(id), (k && k.mouse)
+    ? { mouse: String(k.mouse) }                                    // a mouse button: Mouse3 (middle), Mouse4 (back), Mouse5 (forward)
+    : { code: String(k.code), ctrl: !!k.ctrl, alt: !!k.alt, shift: !!k.shift }),
+  onHotkeyMouse: (cb) => ipcRenderer.on('hotkey-mouse', (_e, id, down) => cb(String(id), !!down)),   // mouse-button talk keys: exact press / release
   clearHotkey: (id) => ipcRenderer.invoke('hk-clear', String(id)),
   setSlotScheme: (s) => ipcRenderer.invoke('slots-set', String(s)),
   // overlay (the small transmit / receive indicator)

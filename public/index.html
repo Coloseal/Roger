@@ -141,6 +141,11 @@
   #bar.off { border-color: var(--line2); background: var(--panel2); color: var(--dim); }
   #replay { width: 58px; height: 40px; border-radius: 10px; border: 1px solid var(--line2); background: var(--panel2); font-size: 11px; line-height: 1.15; }
   #replay:hover { border-color: var(--accent); }
+  #deafBtn { width: 58px; height: 40px; border-radius: 10px; border: 1px solid var(--line2); background: var(--panel2); font-size: 11px; line-height: 1.15; }
+  #deafBtn:hover { border-color: var(--accent); }
+  #deafBtn.on { background: #4a1d1d; border-color: var(--red); color: #ffd7d7; }      /* self-deafened: clearly different */
+  body.touch #deafBtn { width: 74px; height: 116px; border-radius: 16px; font-size: 12px; }
+  .pm .tag.bad { background: #4a1d1d; color: #ffd7d7; border-color: var(--red); }
   .hint { color: var(--dim); font-size: 11px; margin-top: 6px; line-height: 1.35; }
   .outbox { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; padding: 7px 10px; border: 1px solid #5a4514; background: #231b0a; border-radius: 8px; font-size: 12px; color: #ffd98a; }
   .outbox button { padding: 3px 10px; border-radius: 6px; border: 1px solid #5a4514; background: transparent; color: inherit; font-size: 12px; }
@@ -282,6 +287,7 @@
     <div class="pttrow">
       <div id="bar" class="off">Join a channel to talk</div>
       <button id="replay" type="button" title="Replay the last message you received">Replay<br>last</button>
+      <button id="deafBtn" type="button" title="Stop hearing everything (you can still talk). Press again to hear again.">Deafen</button>
     </div>
     <div class="outbox hidden" id="outbox"><span id="outtxt"></span><button id="outcancel" type="button">Cancel</button></div>
     <div class="hint" id="hint"></div>
@@ -483,9 +489,12 @@
         <h3>Other keys</h3>
         <div class="krow"><span class="lbl">Talk key <span style="color:var(--dim)">(on your selected channel)</span></span><kbd id="kTalk">…</kbd><button class="ghost" data-set="talk" type="button">Set</button></div>
         <div class="krow"><span class="lbl">Replay last message</span><kbd id="kRepeat">…</kbd><button class="ghost" data-set="repeat" type="button">Set</button><button class="ghost" data-clr="repeat" type="button">Clear</button></div>
+        <div class="krow"><span class="lbl">Deafen / hear again <span style="color:var(--dim)">(a press switches it on or off)</span></span><kbd id="kDeafen">…</kbd><button class="ghost" data-set="deafen" type="button">Set</button><button class="ghost" data-clr="deafen" type="button">Clear</button></div>
         <h3>Custom channel keys</h3>
         <div id="chKeys"></div>
-        <p class="note">Give any single channel its own key of your choice. All keys work while you're in the game. Mouse buttons can't be used, because Windows security tools flag programs that watch the mouse.</p>
+        <p class="note">Give any single channel its own key of your choice. All keys work while you're in the game.</p>
+        <h3>Mouse buttons</h3>
+        <p class="note">You can use the <b>middle, back or forward mouse button</b> for any action above: press <b>Set</b>, then press the button. You transmit exactly while it's held (or tap to switch on and off, if Toggle mode is on). Left and right click can't be used. While an action is set to a mouse button, Roger checks only that one button, about 60 times a second. It doesn't hook the mouse, can't see other buttons or where you click, and sends nothing anywhere. If nothing is set to a mouse button, it doesn't check at all.</p>
       </div>
       <div id="browserCtl" class="hidden">
         <p class="note" style="font-size:12px">Hold <kbd>Space</kbd> to talk. Install the Roger desktop app to get keys that work while you're in the game.</p>
@@ -586,6 +595,8 @@
   const RATE = 16000;
   const MIN_MSG_FRAMES = 15;             // ~0.3 s: shorter than this is treated as an accidental tap
   const MAX_FRAMES = 1500;               // ~30 s recording cap
+  let selfDeaf = false;                  // "Deafen": you hear nothing (voices and alert sounds) until you switch it off. You can still talk.
+  const lastRestr = {};                  // channel -> { mute, deaf } as a moderator last set it for you (to word the notices)
   let ws = null, me = null, token = store.get('tok', '');       // token = your saved sign-in (the password itself is never kept)
   let joined = new Set(store.get('joined2', []));
   let tx = store.get('tx2', '');
@@ -731,7 +742,7 @@
     catch { store.set('outputId', ''); if (!quiet) alert('That speaker is not available.'); }
   }
 
-  const applyMaster = () => { if (masterGain) masterGain.gain.value = 1.2 * store.get('master', 1); };
+  const applyMaster = () => { if (masterGain) masterGain.gain.value = selfDeaf ? 0 : 1.2 * store.get('master', 1); };
   function spkGain(name) {
     let g = spk.get(name);
     if (!g) { g = ctx.createGain(); g.gain.value = vols[name] != null ? vols[name] : 1; g.connect(playBus); spk.set(name, g); }
@@ -742,7 +753,7 @@
   // (their audio overlaps) instead of being chopped together one chunk after another.
   const idName = new Map();              // connection id -> callsign (for per-person volume)
   function playFrame(chId, spkId, buf) {
-    if (!ctx || !playBus) return;
+    if (!ctx || !playBus || selfDeaf) return;                  // deafened: voices are dropped, not just turned down
     const pcm = new Int16Array(buf.buffer, buf.byteOffset, buf.byteLength >> 1);
     const ab = ctx.createBuffer(1, pcm.length, RATE);
     const d = ab.getChannelData(0);
@@ -776,7 +787,20 @@
     low: () => tone(400, 0.14, 0.14), buzz: () => { tone(320, 0.14, 0.15, 0, 'square'); tone(320, 0.14, 0.15, 0.2, 'square'); },
     double: () => { tone(1000, 0.06); tone(1000, 0.06, 0.12, 0.1); }, ding: () => tone(1320, 0.16),
   };
-  const alertSnd = (k) => { const a = cfg.alerts[k]; if (a && a.on && SOUNDS[a.snd]) SOUNDS[a.snd](); };
+  const alertSnd = (k) => { if (selfDeaf && k !== 'connError') return; const a = cfg.alerts[k]; if (a && a.on && SOUNDS[a.snd]) SOUNDS[a.snd](); };   // (deafened: no beeps either, except "connection lost")
+
+  // ---- Deafen (your own, on this device) ----
+  function setSelfDeaf(v) {
+    selfDeaf = !!v; applyMaster();
+    if (selfDeaf) { for (const t of nextT.keys()) nextT.delete(t); }              // forget the playback schedule so nothing queued plays on later
+    render();
+  }
+  const toggleSelfDeaf = () => setSelfDeaf(!selfDeaf);
+  // What a moderator has done to you on a channel (the server sends the flags with the channel's member list)
+  const myRestr = (name) => {
+    const c = chState.find((x) => x.name === name), m = c && me ? c.members.find((x) => x.id === me.id) : null;
+    return { mute: !!(m && m.mute), deaf: !!(m && m.deaf) };
+  };
 
   // ---------- network ----------
   function send(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
@@ -846,6 +870,22 @@
         joined.delete(m.ch); if (tx === m.ch) tx = [...joined][0] || '';
         store.set('joined2', [...joined]); store.set('tx2', tx);
         toast(m.type === 'kicked' ? `${m.by || 'A moderator'} removed you from ${m.ch}. You can rejoin in ${m.minutes} min.` : `You're blocked from ${m.ch} for about ${m.minutes} more min.`);
+        render();
+      } else if (m.type === 'muted') {                                    // you tried to talk while muted (or were muted mid-sentence)
+        if (ptt !== 'idle') pttUp();
+        render();
+      } else if (m.type === 'restricted') {                               // a moderator muted / deafened / cleared you on a channel
+        const was = lastRestr[m.ch] || { mute: false, deaf: false };
+        lastRestr[m.ch] = { mute: !!m.mute, deaf: !!m.deaf };
+        if (ptt !== 'idle' && m.mute) pttUp();
+        if (!m.quiet) {
+          const who = m.by || 'A moderator', parts = [];
+          if (m.mute && !was.mute) parts.push(`${who} muted you on ${m.ch}: you can't talk there`);
+          if (!m.mute && was.mute) parts.push(`${who} unmuted you on ${m.ch}`);
+          if (m.deaf && !was.deaf) parts.push(`${who} deafened you on ${m.ch}: you can't hear it`);
+          if (!m.deaf && was.deaf) parts.push(`${who} let you hear ${m.ch} again`);
+          if (parts.length) toast(parts.join('. ') + '.', (m.mute || m.deaf) ? undefined : 'info');
+        } else if (m.mute || m.deaf) toast(`You are still ${m.mute && m.deaf ? 'muted and deafened' : m.mute ? 'muted' : 'deafened'} on ${m.ch} by a moderator.`);
         render();
       } else if (m.type === 'mode_changed') {
         toast(`${m.by || 'A moderator'} set ${m.ch} to ${m.mode === 'open' ? 'OPEN NET: everyone can talk at once' : 'one at a time'}.`, 'info');
@@ -954,6 +994,7 @@
 
   function pttDown() {
     if (ptt !== 'idle' || !me || !joined.has(tx) || !ctx) return;
+    if (myRestr(tx).mute) { alertSnd('busy'); return; }                // muted by a moderator on this channel (the server refuses anyway)
     if (outbox) { alertSnd('busy'); return; }      // your earlier message is still queued or being sent: never replace it (it would be lost)
     if (ctx.state !== 'running') ctx.resume();
     const ch = txChan();
@@ -1082,6 +1123,7 @@
     playHistory(list[list.length - 1]);
   }
   $('replay').onclick = replayLast;
+  $('deafBtn').onclick = toggleSelfDeaf;
 
   const fmtTime = (ts) => {
     const d = new Date(ts), t = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -1152,8 +1194,9 @@
     else if (e.altKey && e.key === 'ArrowRight') { e.preventDefault(); forward(); }
     else if (e.key === 'Escape' && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) back();
   });
-  window.addEventListener('mouseup', (e) => {            // mouse side buttons
-    if (e.button === 3) { e.preventDefault(); back(); } else if (e.button === 4) { e.preventDefault(); forward(); }
+  window.addEventListener('mouseup', (e) => {            // mouse side buttons (not when you've made that button a talk key)
+    const talkKey = (a) => !!(typeof hk !== 'undefined' && hk && hk.keys && Object.values(hk.keys).includes(a));
+    if (e.button === 3 && !talkKey('Mouse4')) { e.preventDefault(); back(); } else if (e.button === 4 && !talkKey('Mouse5')) { e.preventDefault(); forward(); }
   });
   if (window.bhr && window.bhr.onNav) window.bhr.onNav((d) => (d === 'back' ? back() : forward()));
 
@@ -1332,7 +1375,7 @@
   const AUDIT = {
     admin_created: 'created the owner account', created_user: 'created member', created_mod: 'created moderator', created_joint: 'added joint-op person',
     created_faction: 'created faction', deleted_faction: 'deleted faction', deleted_user: 'deleted', disabled_user: 'disabled', enabled_user: 're-enabled',
-    reset_password: 'reset the password of', set_role: 'changed the role of', kicked_from_channel: 'kicked from a channel:', kicked_from_app: 'signed out of Roger:',
+    reset_password: 'reset the password of', set_role: 'changed the role of', kicked_from_channel: 'kicked from a channel:', kicked_from_app: 'signed out of Roger:', muted: 'muted', unmuted: 'unmuted', deafened: 'deafened', undeafened: 'let hear again:',
     disabled_faction: 'switched off faction', enabled_faction: 'switched on faction', changed_own_password: 'changed their own password',
     set_channel_mode: 'changed the mode of channel',
   };
@@ -1401,6 +1444,8 @@
       if (m.tag) nm.append(el('span', 'tag', m.tag));                       // e.g. "Delta Company · HICOM 1"
       if (m.u && isStaff()) nm.append(el('span', 'tag', '@' + m.u));         // only moderators get to see the account behind a callsign
       if (talking) nm.append(el('span', 'tag live', 'talking'));
+      if (m.mute) nm.append(el('span', 'tag bad', 'muted'));                // set by a moderator
+      if (m.deaf) nm.append(el('span', 'tag bad', 'deafened'));
       row.append(nm);
       if (!isMe) {                                       // per-person volume, right where you see them
         const vr = el('div', 'vrow'), r = el('input'), v = el('span', 'v');
@@ -1411,6 +1456,8 @@
       }
       if (!isMe && iCanManage(m.role)) {                // moderator buttons
         const act = el('div', 'pmact');
+        act.append(mkBtn(m.mute ? 'Unmute' : 'Mute', '', () => send({ type: 'mod_restrict', ch: name, id: m.id, mute: !m.mute })));      // can't talk on this channel
+        act.append(mkBtn(m.deaf ? 'Undeafen' : 'Deafen', '', () => send({ type: 'mod_restrict', ch: name, id: m.id, deaf: !m.deaf })));  // can't hear this channel
         act.append(mkBtn('Kick from channel', 'dng', () => {
           if (confirm(`Remove ${m.name} from ${name}? They can't rejoin it for 10 minutes.`)) send({ type: 'mod_kick_channel', ch: name, id: m.id });
         }));
@@ -1547,7 +1594,7 @@
     const dsc = $('txdesc');
     if (isJ && ch && ch.desc) { dsc.textContent = ch.desc; dsc.classList.remove('hidden'); } else dsc.classList.add('hidden');
     // The bar shows what is happening and which key to use; there is no on-screen talk button.
-    const keyName = IS_DESKTOP ? ((hk && hk.keys && hk.keys.talk) || 'your talk key') : 'Space';
+    const keyName = IS_DESKTOP ? (hk && hk.keys && hk.keys.talk ? ({ Mouse3: 'the middle mouse button', Mouse4: 'the mouse back button', Mouse5: 'the mouse forward button' }[hk.keys.talk] || hk.keys.talk) : 'your talk key') : 'Space';
     const hold = (what) => (IS_TOUCH ? `hold to ${what}` : `hold ${keyName} to ${what}`);
     bar.className = '';
     let t, color = 'var(--dim)', label;
@@ -1555,6 +1602,7 @@
     if (touchLatched && ptt === 'idle') touchLatched = false;
     if (!online) { t = 'Reconnecting…'; label = 'Offline'; bar.className = 'off'; }
     else if (!isJ) { t = 'Join a channel'; label = 'Join a channel to talk'; bar.className = 'off'; }
+    else if (myRestr(tx).mute) { t = 'Muted by a moderator'; color = 'var(--red)'; label = 'Muted by a moderator'; bar.className = 'off'; }
     else if (ptt === 'live') { t = 'On air'; color = 'var(--amber)'; label = (IS_TOUCH || IS_WEB) ? (touchLatched ? (IS_TOUCH ? 'On air · tap to stop' : 'On air · click to stop') : 'On air · release to stop') : 'On air'; bar.className = 'live'; }
     else if (ptt === 'pending') { t = 'Keying up…'; color = 'var(--amber)'; label = 'On air'; bar.className = 'live'; }
     else if (ptt === 'rec') { t = `Busy — ${busyBy ? busyBy.name : 'someone'} · recording`; color = 'var(--amber)'; label = 'Recording · sends when clear'; bar.className = 'rec'; }
@@ -1566,7 +1614,12 @@
     }
     else if (cfg.vox.on) { t = 'Channel clear'; color = 'var(--green)'; label = 'VOX · just speak'; bar.className = 'vox'; }
     else { t = 'Channel clear'; color = 'var(--green)'; label = `Ready · ${hold('talk')}`; }
+    const rs = isJ ? myRestr(tx) : { mute: false, deaf: false };
+    if (rs.deaf) t += ' · deafened by a moderator';                  // you can still talk, but hear nothing here
+    if (selfDeaf) t += ' · you are deafened';
     $('status').textContent = t; $('status').style.color = color; bar.textContent = label;
+    const db = $('deafBtn'); db.classList.toggle('on', selfDeaf); db.innerHTML = selfDeaf ? 'Hearing<br>off' : 'Deafen';
+    db.title = selfDeaf ? 'You are deafened: you hear nothing. Press to hear again.' : 'Stop hearing everything (you can still talk). Press again to hear again.';
     if (APP && APP.setState) { try { APP.setState(bar.className || 'ready'); } catch {} }    // colours the Android floating button
     $('replay').disabled = !isJ;
 
@@ -1583,7 +1636,7 @@
       const sorted = [...ch.members].sort((a, b) => ((talkersOf(ch).includes(b.id)) - (talkersOf(ch).includes(a.id))) || ((b.id === myId) - (a.id === myId)) || a.name.localeCompare(b.name));
       for (const m of sorted.slice(0, LIMIT)) {
         const isMe = m.id === myId;
-        ro.append(el('li', (isMe ? 'me ' : '') + (talkersOf(ch).includes(m.id) ? 'talk' : ''), m.name + (isMe ? ' (you)' : '')));
+        ro.append(el('li', (isMe ? 'me ' : '') + (talkersOf(ch).includes(m.id) ? 'talk' : ''), m.name + (isMe ? ' (you)' : '') + (m.mute ? ' · muted' : '') + (m.deaf ? ' · deafened' : '')));
       }
       if (sorted.length > LIMIT) {
         const more = el('li', 'more', `+${sorted.length - LIMIT} more ›`);
@@ -1694,19 +1747,33 @@
   }
 
   // control tab (desktop hotkeys)
-  const keyLabel = (id) => (hk.keys[id] ? hk.keys[id] + (hk.failed[id] ? ' (unavailable)' : '') : 'none');
+  const MOUSE_NAMES = { Mouse3: 'Middle mouse button', Mouse4: 'Mouse back button (4)', Mouse5: 'Mouse forward button (5)' };
+  const prettyKey = (a) => MOUSE_NAMES[a] || a;
+  const keyLabel = (id) => (hk.keys[id] ? prettyKey(hk.keys[id]) + (hk.failed[id] ? ' (unavailable)' : '') : 'none');
   function captureKey(id, done) {
-    const kb = done.kbd, old = kb.textContent; kb.textContent = 'press a key…';
+    const kb = done.kbd, old = kb.textContent; kb.textContent = 'press a key or a mouse button…';
+    const finish = () => { window.removeEventListener('keydown', onKey, true); window.removeEventListener('mousedown', onMouse, true); };
     const onKey = async (e) => {
       if (['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) return;
       e.preventDefault(); e.stopPropagation();
-      window.removeEventListener('keydown', onKey, true);
+      finish();
       if (e.code === 'Escape') { kb.textContent = old; return; }
       const r = await window.bhr.setHotkey(id, { code: e.code, ctrl: e.ctrlKey, alt: e.altKey, shift: e.shiftKey });
       hk = r; if (!r.ok) alert(r.error);
       renderHotkeys();
     };
+    // Middle, back and forward mouse buttons can be used too (left and right clicks are ignored so you can still click around).
+    const onMouse = async (e) => {
+      const m = { 1: 'Mouse3', 3: 'Mouse4', 4: 'Mouse5' }[e.button];
+      if (!m) return;
+      e.preventDefault(); e.stopPropagation();
+      finish();
+      const r = await window.bhr.setHotkey(id, { mouse: m });
+      hk = r; if (!r.ok) alert(r.error);
+      renderHotkeys();
+    };
     window.addEventListener('keydown', onKey, true);
+    if (hk.mouseOk !== false) window.addEventListener('mousedown', onMouse, true);
   }
   function renderChannelKeys() {
     if (!IS_DESKTOP) return;
@@ -1740,7 +1807,7 @@
   }
   function renderHotkeys() {
     if (!IS_DESKTOP) return;
-    $('kTalk').textContent = keyLabel('talk'); $('kRepeat').textContent = keyLabel('repeat');
+    $('kTalk').textContent = keyLabel('talk'); $('kRepeat').textContent = keyLabel('repeat'); $('kDeafen').textContent = keyLabel('deafen');
     renderChannelKeys(); renderSlots(); render();
   }
 
@@ -1824,6 +1891,7 @@
   }
   $('micTest').onclick = () => {
     if (micPhase) { stopMicTest(); return; }
+    if (selfDeaf) { micMsg('Deafen is on, so you would hear nothing. Turn it off (the Deafen button) and try again.', true); return; }
     if (!ctx || !monGain) { micMsg('Sign in first, then try again.', true); return; }
     if (ptt !== 'idle') { micMsg("You're on air right now. Try again in a moment.", true); return; }
     ctx.resume();
@@ -1894,10 +1962,32 @@
       talkOwner = id; pttDown();
     }
     function talkUp(id) { if (talkOwner === id) { talkOwner = null; pttUp(); } }
-    function onHotkey(id) {
+    function onHotkeyUp(id) {                            // a watched talk key was let go
+      const s = ks[id]; if (!s || !s.tracked) return;
+      s.tracked = false;
+      if (!cfg.toggleTalk) { if (talkOwner === id) talkUp(id); return; }
+      if (s.ignoreUp) { s.ignoreUp = false; return; }
+      if (talkOwner === id && performance.now() - s.pressAt >= 300) talkUp(id);
+    }
+    function onHotkey(id, tracked) {
       if (id === 'repeat') { const n = performance.now(); if (n - (ks.repeat || 0) > 400) replayLast(); ks.repeat = n; return; }
+      if (id === 'deafen') { const n = performance.now(); if (n - (ks.deafen || 0) > 400) toggleSelfDeaf(); ks.deafen = n; return; }   // a press flips it; held-key repeats are ignored
       const s = ks[id] || (ks[id] = { last: 0, mode: 'idle', probe: 0, rel: 0 });
       const now = performance.now(), gap = now - s.last; s.last = now;
+      if (tracked) {                                     // ---- the app is watching this key and will tell us the moment it is released
+        clearTimeout(s.rel); clearTimeout(s.probe);
+        s.tracked = true; s.pressAt = now; s.ignoreUp = false;
+        if (talkOwner === id && ptt === 'idle') talkOwner = null;
+        if (!cfg.toggleTalk) {                           // hold mode: on air until the release arrives, whatever else you press meanwhile
+          if (ptt === 'idle') talkDown(id); else if (!talkOwner) pttUp();
+        } else {                                         // toggle mode: a tap keeps you on air, tap again to stop; a long hold still stops when you let go
+          if (ptt === 'idle') talkDown(id);
+          else if (talkOwner === id) { talkUp(id); s.ignoreUp = true; }
+          else if (!talkOwner) pttUp();
+        }
+        return;
+      }
+      s.tracked = false;                                 // (not watched: use the key-repeat method below)
       if (!cfg.toggleTalk) {                             // ---- hold mode (default)
         if (talkOwner === id && ptt === 'idle') { talkOwner = null; clearTimeout(s.rel); }   // (we were stopped some other way: start fresh)
         if (talkOwner === id) {                          // the key is still down (auto-repeat): stay on air, release shortly after the repeats stop
@@ -1926,8 +2016,25 @@
         clearTimeout(s.probe); s.probe = setTimeout(() => { s.mode = 'idle'; talkUp(id); }, 90);
       } else if (!talkOwner) pttUp();
     }
+    // Mouse-button talk keys report an exact press and release.
+    function onMouseHotkey(id, down) {
+      if (id === 'repeat') { if (down) replayLast(); return; }
+      if (id === 'deafen') { if (down) toggleSelfDeaf(); return; }
+      if (cfg.toggleTalk) {                              // toggle mode: each press switches on / off, letting go does nothing
+        if (!down) return;
+        if (talkOwner === id && ptt === 'idle') talkOwner = null;
+        if (ptt === 'idle') talkDown(id); else if (talkOwner === id || !talkOwner) { talkOwner = null; pttUp(); }
+        return;
+      }
+      if (down) { if (ptt === 'idle') talkDown(id); else if (!talkOwner) pttUp(); }    // hold mode: on air while the button is held
+      else talkUp(id);
+    }
+    if (window.bhr.onHotkeyMouse) window.bhr.onHotkeyMouse(onMouseHotkey);
+    window.__hotkeyMouse = onMouseHotkey;    // (used by the automated tests)
     window.bhr.onHotkey(onHotkey);
+    if (window.bhr.onHotkeyUp) window.bhr.onHotkeyUp(onHotkeyUp);   // (older installed apps don't send releases: they use the key-repeat method)
     window.__hotkey = onHotkey;    // (used by the automated tests)
+    window.__hotkeyUp = onHotkeyUp;
     if (window.bhr.getCloseMode) {       // (versions before 1.2.1 close straight to quit and have no tray)
       $('closeBox').classList.remove('hidden');
       window.bhr.getCloseMode().then((m) => { $('selClose').value = m; });
@@ -1964,7 +2071,7 @@
     $('onTop').onchange = (e) => window.bhr.setOnTop(e.target.checked);
     window.bhr.getStartup().then((v) => { $('cStartup').checked = !!v; });
     $('cStartup').onchange = (e) => window.bhr.setStartup(e.target.checked);
-    document.querySelectorAll('[data-set]').forEach((b) => { b.onclick = () => captureKey(b.dataset.set, { kbd: b.dataset.set === 'talk' ? $('kTalk') : $('kRepeat') }); });
+    document.querySelectorAll('[data-set]').forEach((b) => { b.onclick = () => captureKey(b.dataset.set, { kbd: { talk: $('kTalk'), repeat: $('kRepeat'), deafen: $('kDeafen') }[b.dataset.set] }); });
     document.querySelectorAll('[data-clr]').forEach((b) => { b.onclick = async () => { hk = await window.bhr.clearHotkey(b.dataset.clr); renderHotkeys(); }; });
   } else {
     $('browserCtl').classList.remove('hidden');

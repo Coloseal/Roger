@@ -6,7 +6,7 @@ and an Android app. The source for all of it is in this repository, so you can r
 ## The short version
 - **No ads, no trackers, no analytics.** Nothing is sent anywhere except to the Roger server you sign in to, and (for updates) to GitHub.
 - **No admin rights.** The Windows app installs for your user only. There is no administrator prompt.
-- **No keyboard hooks.** The Windows app registers only the talk keys *you* choose, using Windows' standard hotkey feature. It cannot see any other key you press.
+- **No keyboard hooks.** The Windows app registers only the talk keys *you* choose, using Windows' standard hotkey feature. It cannot see any other key you press. While you are holding one of your talk keys (or a mouse button you chose as one), it checks whether that one key or button is still down (see below), so it knows the moment you let go.
 - **Your password is never stored**, not on the server (only a slow hash of it) and not on your device (only a sign-in token).
 - **Voice is encrypted on the way to the server, but not end-to-end.** See "Voice" below.
 
@@ -18,7 +18,11 @@ and an Android app. The source for all of it is in this repository, so you can r
 
 ## Accounts
 The server stores, for each account: username, role, last callsign, last sign-in time, and a **scrypt hash** of the password.
-It also keeps a log of moderator actions (kicks, resets, and so on). Sign-in is rate-limited (a few wrong guesses lock the account for a few minutes), sign-in tokens are signed and can be revoked, and permissions are enforced on the server, not just in the page. There is no public sign-up: accounts are created by the owner or a moderator.
+It also keeps a log of moderator actions (kicks, resets, mutes, deafens, and so on). Sign-in is rate-limited (a few wrong guesses lock the account for a few minutes), sign-in tokens are signed and can be revoked, and permissions are enforced on the server, not just in the page. There is no public sign-up: accounts are created by the owner or a moderator.
+
+## Moderators and Deafen
+- **Moderator mute / deafen:** a moderator or the owner can **mute** someone on a channel (they can't talk there) or **deafen** them (they hear nothing from it). Everyone on the channel can see who is muted or deafened, the person is told who did it, and each action is written to the moderator log. A moderator can't do this to the owner or another moderator. It's held in the server's memory, lasts at most 12 hours, and is cleared if the server restarts.
+- **Your own Deafen:** the Deafen button (and an optional key or mouse button in the Windows app) silences everything you would hear, entirely on your own device. You can still talk. Nobody else is told.
 
 ## The website
 - Served over HTTPS only, with HSTS, a strict Content-Security-Policy (only the page's own script may run; nothing from other websites), a permissions policy (microphone for this site only), and anti-framing headers.
@@ -30,6 +34,8 @@ It also keeps a log of moderator actions (kicks, resets, and so on). Sign-in is 
 - Loads your Roger server's page in a locked-down window: no Node.js access from the page, context isolation and sandbox on, it cannot navigate to any other website, and links open in your normal browser (web links only).
 - Only the microphone permission is granted, and only to your Roger server.
 - **Updates:** once each time you open it, the app asks this GitHub repository for a newer release. If there is one it downloads it, checks the file against the SHA-512 fingerprint in the release's `latest.yml`, installs it, and reopens. That is the only other place it talks to.
+- **Knowing when you let go of a talk key:** Windows only reports key presses to a hotkey, not releases. So, only while one of your talk keys is held, the app asks Windows (GetAsyncKeyState, through the koffi library) whether that one key is still down, every 15 milliseconds. It never looks at any other key, records or stores nothing, sends nothing anywhere, and stops the moment you let go. If that can't be used, the app falls back to guessing from key repeats.
+- **Mouse buttons as talk keys (optional):** Windows can't use a mouse button as a hotkey, so if you set an action to the middle, back or forward button, the app watches that one button the same way (about 60 times a second). It installs no hook, can't see the other buttons or where you click, and does nothing at all if no action is set to a mouse button.
 - Optional (off unless you turn it on): start with Windows, always on top, an on-screen overlay.
 
 ## The Android app

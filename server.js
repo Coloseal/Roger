@@ -46,6 +46,14 @@ let nextChannelId = 1;
 const clients = new Map();   // connection id -> client
 const channels = new Map();  // name -> channel
 const bans = new Map();      // "userId|CHANNEL" -> time the block ends
+// Moderator mute / deafen, per person per channel. Muted = can't transmit there. Deafened = hears nothing from that channel.
+// Kept by account (so leaving and rejoining doesn't clear it), lifted by a moderator, and it expires on its own after 12 hours.
+// (Held in memory like channel blocks: a server restart clears it.)
+const restrictions = new Map();   // "userId|CHANNEL" -> { mute, deaf, by, until }
+const RESTRICT_MS = 12 * 60 * 60 * 1000;
+const restrictionOf = (c, ch) => { const r = c && c.user && restrictions.get(`${c.user.id}|${ch.name}`); return r && r.until > Date.now() ? r : null; };
+const isMuted = (c, ch) => !!(restrictionOf(c, ch) || {}).mute;
+const isDeaf = (c, ch) => !!(restrictionOf(c, ch) || {}).deaf;
 // Channel modes (set by moderators, remembered in the database):
 //   'queue' = one person talks at a time; others wait their turn (like a real radio)   <- default
 //   'open'  = open net: everyone can talk at the same time and you hear them all mixed together
@@ -119,7 +127,12 @@ function snapshot(forStaff) {
     mode: ch.mode,
     talker: ch.talkers.size ? [...ch.talkers][0].id : null,       // the first one talking (in queue mode, the only one)
     talkers: [...ch.talkers].map((c) => c.id),                    // everyone talking right now (several in an open net)
-    members: [...ch.members].filter((c) => c.user).map((c) => memberView(c, forStaff)),
+    members: [...ch.members].filter((c) => c.user).map((c) => {
+      const v = memberView(c, forStaff), r = restrictionOf(c, ch);
+      if (r && r.mute) v.mute = true;                                   // everyone can see who is muted / deafened here
+      if (r && r.deaf) v.deaf = true;
+      return v;
+    }),
   }));
 }
 
@@ -348,12 +361,13 @@ wss.on('connection', (ws) => {
     if (isBinary) {
       const ch = client.talkingIn;
       if (!client.user || !ch || !ch.talkers.has(client)) return;
+      if (isMuted(client, ch)) { releaseFloor(ch, client); sendTo(client, { type: 'muted', ch: ch.name }); broadcastState(); return; }   // muted while talking: cut off
       client.lastFrame = Date.now();
       // 6-byte header: which channel (2 bytes) + WHO is speaking (4 bytes), so several speakers in an open net stay separate
       const out = Buffer.allocUnsafe(6 + data.length);
       out.writeUInt16BE(ch.id, 0); out.writeUInt32BE(client.id, 2);
       data.copy ? data.copy(out, 6) : Buffer.from(data).copy(out, 6);
-      for (const m of ch.members) if (m !== client && m.ws.readyState === 1) m.ws.send(out, { binary: true });
+      for (const m of ch.members) if (m !== client && m.ws.readyState === 1 && !isDeaf(m, ch)) m.ws.send(out, { binary: true });   // deafened people get nothing
       if (client.rec && client.rec.bytes < MAX_TALK_MS * 32) { client.rec.chunks.push(Buffer.from(data)); client.rec.bytes += data.length; }
       return;
     }
@@ -372,12 +386,13 @@ wss.on('connection', (ws) => {
       const ch = getChannel(name);
       if (!ch) return;
       ch.members.add(client); client.channels.add(ch);
+      const rs = restrictionOf(client, ch); if (rs) sendTo(client, { type: 'restricted', ch: ch.name, mute: !!rs.mute, deaf: !!rs.deaf, by: rs.by, quiet: true });   // still muted / deafened from before
       broadcastState(); notifyStaff({ type: 'admin_changed' });
       sendTo(client, { type: 'history', ch: ch.name, items: history.filter((h) => h.ch === ch.name).slice(-HISTORY_PER_CHANNEL).map(metaOf) });
     } else if (msg.type === 'get_audio') {
       // Replay a past message. Only members of that message's channel may fetch it.
       const item = history.find((h) => h.id === msg.id);
-      if (!item || ![...client.channels].some((c) => c.name === item.ch)) { sendTo(client, { type: 'audio_missing', id: msg.id }); return; }
+      if (!item || ![...client.channels].some((c) => c.name === item.ch) || isDeaf(client, channels.get(item.ch))) { sendTo(client, { type: 'audio_missing', id: msg.id }); return; }   // (deafened = no replays either)
       const out = Buffer.allocUnsafe(6 + item.pcm.length);
       out.writeUInt16BE(0xFFFF, 0); out.writeUInt32BE(item.id, 2); item.pcm.copy(out, 6);
       ws.send(out, { binary: true });
@@ -387,6 +402,7 @@ wss.on('connection', (ws) => {
     } else if (msg.type === 'ptt_start') {
       const ch = channels.get(String(msg.ch));
       if (!ch || !ch.members.has(client)) return;
+      if (isMuted(client, ch)) { sendTo(client, { type: 'muted', ch: ch.name }); return; }
       if (ch.mode !== 'open' && ch.talkers.size && !ch.talkers.has(client)) { sendTo(client, { type: 'denied', ch: ch.name, by: [...ch.talkers][0].name }); return; }
       grantFloor(ch, client);
       broadcastState();
@@ -394,6 +410,7 @@ wss.on('connection', (ws) => {
       // "I want the floor as soon as it's free": joins the line, and is granted automatically when it's their turn.
       const ch = channels.get(String(msg.ch));
       if (!ch || !ch.members.has(client) || ch.talkers.has(client)) return;
+      if (isMuted(client, ch)) { sendTo(client, { type: 'muted', ch: ch.name }); return; }
       if (!ch.waiters.includes(client)) ch.waiters.push(client);
       serveWaiters(ch); broadcastState();
     } else if (msg.type === 'ptt_unwait') {
@@ -426,6 +443,18 @@ wss.on('connection', (ws) => {
       bans.set(`${target.user.id}|${ch.name}`, Date.now() + KICK_BLOCK_MS);
       sendTo(target, { type: 'kicked', ch: ch.name, by: client.name, minutes: KICK_BLOCK_MS / 60000 });
       store.addAudit(client.user.username, 'kicked_from_channel', target.user.username, ch.name);
+      broadcastState(); notifyStaff({ type: 'admin_changed' });
+    } else if (msg.type === 'mod_restrict') {
+      // Moderators mute (can't talk) and/or deafen (can't hear) someone on one channel. Same rules as kicking: only people you may manage.
+      const target = clients.get(Number(msg.id)), ch = channels.get(String(msg.ch));
+      if (!isStaff(client) || !target || !target.user || target === client || !accounts.canManage(client.user, target.user) || !ch || !ch.members.has(target)) return;
+      const key = `${target.user.id}|${ch.name}`, cur = restrictionOf(target, ch) || { mute: false, deaf: false };
+      const next = { mute: msg.mute === undefined ? !!cur.mute : !!msg.mute, deaf: msg.deaf === undefined ? !!cur.deaf : !!msg.deaf, by: client.name, until: Date.now() + RESTRICT_MS };
+      if (!next.mute && !next.deaf) restrictions.delete(key); else restrictions.set(key, next);
+      if (next.mute && !cur.mute) { ch.waiters = ch.waiters.filter((w) => w !== target); releaseFloor(ch, target); }          // muted: off the air now
+      if (next.mute !== !!cur.mute) store.addAudit(client.user.username, next.mute ? 'muted' : 'unmuted', target.user.username, ch.name);
+      if (next.deaf !== !!cur.deaf) store.addAudit(client.user.username, next.deaf ? 'deafened' : 'undeafened', target.user.username, ch.name);
+      sendTo(target, { type: 'restricted', ch: ch.name, mute: next.mute, deaf: next.deaf, by: client.name });
       broadcastState(); notifyStaff({ type: 'admin_changed' });
     } else if (msg.type === 'mod_set_mode') {
       // Moderators switch a channel between "one at a time" and "open net" (everyone can talk at once).
@@ -488,7 +517,9 @@ setInterval(() => {
       }
     }
   }
-  if (changed) broadcastState();
+  let lifted = false;
+  for (const [k, r] of restrictions) if (r.until < now) { restrictions.delete(k); lifted = true; }     // a mute / deafen that has run its 12 hours
+  if (changed || lifted) broadcastState();
   for (const [k, until] of bans) if (until < now) bans.delete(k);
 }, 1000);
 

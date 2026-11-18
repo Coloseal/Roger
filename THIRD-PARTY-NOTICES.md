@@ -14,6 +14,7 @@ see `LICENSE.electron.txt` and `LICENSES.chromium.html` inside the installed app
 |---|---|---|
 | Electron (includes Chromium and Node.js) | MIT (Chromium: BSD-style and others) | The app window |
 | electron-updater and its parts (builder-util-runtime, semver, js-yaml, fs-extra, lazy-val and others) | MIT / ISC | Updates |
+| koffi | MIT | Lets the app ask Windows whether your talk key or chosen mouse button is still held |
 
 Build tools only (not shipped): electron-builder and its dependencies.
 

@@ -57,11 +57,92 @@ const SLOT_SCHEMES = {
   altf: (n) => `Alt+F${n}`,
 };
 let slotScheme = 'none';
+
+// ---- knowing when you let go of a talk key (Windows) ----------------------------------------------------------------
+// A Windows hotkey only reports key PRESSES. While you hold the key Windows repeats the press, and the app used to treat "the
+// repeats stopped" as "you let go". But Windows only repeats the LAST key pressed, so pressing anything else while holding the
+// talk key (moving, say) stopped the repeats and cut you off. Now, right after a talk key is pressed, the app asks Windows
+// (GetAsyncKeyState, through the koffi library) whether THAT one key is still down, every 15 ms, until you let go. It only
+// ever looks at the key you chose, only while it is held, and records and sends nothing. If this can't be used for any reason,
+// the app falls back to the old repeat-based method.
+const VK_SPECIAL = {
+  '`': 0xC0, '-': 0xBD, '=': 0xBB, '[': 0xDB, ']': 0xDD, '\\': 0xDC, ';': 0xBA, "'": 0xDE, ',': 0xBC, '.': 0xBE, '/': 0xBF,
+  Space: 0x20, Tab: 0x09, Enter: 0x0D, Backspace: 0x08, Insert: 0x2D, Delete: 0x2E, Home: 0x24, End: 0x23, PageUp: 0x21, PageDown: 0x22,
+  Up: 0x26, Down: 0x28, Left: 0x25, Right: 0x27, numadd: 0x6B, numsub: 0x6D, nummult: 0x6A, numdiv: 0x6F, numdec: 0x6E,
+};
+function vkFor(accel) {                                 // accelerator such as "Control+F8" -> Windows virtual-key code of its main key
+  const key = String(accel).split('+').pop();
+  if (VK_SPECIAL[key] != null) return VK_SPECIAL[key];
+  let m;
+  if (/^[A-Za-z]$/.test(key)) return key.toUpperCase().charCodeAt(0);
+  if (/^\d$/.test(key)) return key.charCodeAt(0);
+  if ((m = /^F(\d{1,2})$/i.exec(key)) && +m[1] >= 1 && +m[1] <= 24) return 0x6F + +m[1];
+  if ((m = /^num(\d)$/i.exec(key))) return 0x60 + +m[1];
+  return null;
+}
+let keyReader;                                          // undefined = not tried yet; null = not available
+function getKeyReader() {
+  if (keyReader !== undefined) return keyReader;
+  keyReader = null;
+  if (process.platform !== 'win32') return null;
+  try {
+    const koffi = require('koffi');
+    const getState = koffi.load('user32.dll').func('short __stdcall GetAsyncKeyState(int vKey)');
+    keyReader = (vk) => (getState(vk) & 0x8000) !== 0;
+  } catch (e) { console.error('key release detection unavailable:', e.message); }
+  return keyReader;
+}
+// Mouse buttons as talk keys: Windows can't use a mouse button as a hotkey at all, so when (and only when) an action is set to the
+// middle / back / forward button, the app watches that ONE button the same way (60 times a second), which also gives an exact press
+// and release. It installs no hook, can't see the other buttons or where you click, and does nothing if no action uses a mouse button.
+const MOUSE_VK = { Mouse3: 0x04, Mouse4: 0x05, Mouse5: 0x06 };       // middle, back (X1), forward (X2)
+let mousePoll = null; const mouseDown = {};
+function getMouseReader() {
+  if (process.env.BHR_FAKE_MOUSE) {                                    // (testing only: the buttons "held" are listed in this file)
+    const file = process.env.BHR_FAKE_MOUSE;
+    return (vk) => { try { return fs.readFileSync(file, 'utf8').split(',').map((s) => s.trim()).includes(String(vk)); } catch { return false; } };
+  }
+  return getKeyReader();
+}
+const mouseBound = () => Object.entries(hotkeys).filter(([, a]) => MOUSE_VK[a]);
+function syncMousePoller() {
+  if (!mouseBound().length) {
+    if (mousePoll) { clearInterval(mousePoll); mousePoll = null; }
+    for (const id of Object.keys(mouseDown)) { if (mouseDown[id]) sendToWin('hotkey-mouse', id, false); delete mouseDown[id]; }   // never leave a button "stuck"
+    return;
+  }
+  if (mousePoll) return;
+  const read = getMouseReader(); if (!read) return;
+  mousePoll = setInterval(() => {
+    for (const [id, a] of mouseBound()) {
+      let d = false; try { d = !!read(MOUSE_VK[a]); } catch {}
+      if (d !== !!mouseDown[id]) { mouseDown[id] = d; sendToWin('hotkey-mouse', id, d); }
+    }
+  }, 16);
+}
+const heldKeys = {};                                    // id -> timer, only while that talk key is physically held
+function clearHeldKeys(tell) {
+  for (const id of Object.keys(heldKeys)) { clearInterval(heldKeys[id]); delete heldKeys[id]; if (tell) sendToWin('hotkey-up', id); }
+}
+function onHotkeyPressed(id, accel) {
+  if (heldKeys[id]) return;                             // the same press repeating while held: nothing new to report
+  const vk = (id === 'repeat' || id === 'deafen') ? null : vkFor(accel), read = vk ? getKeyReader() : null;   // (replay and deafen are single presses: nothing to hold)
+  if (read && read(vk)) {                               // confirmed down: follow this key until it is released
+    sendToWin('hotkey', id, true);
+    const started = Date.now();
+    heldKeys[id] = setInterval(() => {
+      let down = true; try { down = read(vk); } catch { down = false; }
+      if (!down || Date.now() - started > 10 * 60 * 1000) { clearInterval(heldKeys[id]); delete heldKeys[id]; sendToWin('hotkey-up', id); }
+    }, 15);
+  } else sendToWin('hotkey', id, false);                // can't follow it: the page falls back to the repeat-based method
+}
 function registerAll() {
+  clearHeldKeys(true);
   globalShortcut.unregisterAll(); failedKeys = {};
   for (const [id, accel] of Object.entries(hotkeys)) {
+    if (MOUSE_VK[accel]) { if (!getMouseReader()) failedKeys[id] = true; continue; }    // mouse buttons are followed by the watcher, not a hotkey
     let ok = false;
-    try { ok = globalShortcut.register(accel, () => sendToWin('hotkey', id)); } catch {}
+    try { ok = globalShortcut.register(accel, () => onHotkeyPressed(id, accel)); } catch {}
     if (!ok) failedKeys[id] = true;
   }
   const fmt = SLOT_SCHEMES[slotScheme];
@@ -69,11 +150,12 @@ function registerAll() {
     const accel = fmt(n), id = 'slot:' + n;
     if (Object.values(hotkeys).some((a) => a.toLowerCase() === accel.toLowerCase())) { failedKeys[id] = true; continue; }
     let ok = false;
-    try { ok = globalShortcut.register(accel, () => sendToWin('hotkey', id)); } catch {}
+    try { ok = globalShortcut.register(accel, () => onHotkeyPressed(id, accel)); } catch {}
     if (!ok) failedKeys[id] = true;
   }
+  syncMousePoller();
 }
-const hotkeyState = () => ({ keys: { ...hotkeys }, failed: { ...failedKeys }, slotScheme });
+const hotkeyState = () => ({ keys: { ...hotkeys }, failed: { ...failedKeys }, slotScheme, mouseOk: process.platform === 'win32' || !!process.env.BHR_FAKE_MOUSE });
 
 ipcMain.handle('hk-get', () => hotkeyState());
 ipcMain.handle('slots-set', (_e, scheme) => {
@@ -84,6 +166,15 @@ ipcMain.handle('slots-set', (_e, scheme) => {
 // Renderer captured a key press: {code, ctrl, alt, shift}
 ipcMain.handle('hk-set', (_e, id, k) => {
   id = String(id);
+  if (k && k.mouse) {                                                  // a mouse button (middle / back / forward)
+    const m = String(k.mouse);
+    if (!MOUSE_VK[m]) return { ok: false, error: 'That mouse button can\'t be used. Use the middle, back or forward button.', ...hotkeyState() };
+    if (!getMouseReader()) return { ok: false, error: 'Mouse buttons can\'t be used on this computer.', ...hotkeyState() };
+    const clash = Object.entries(hotkeys).find(([other, a]) => other !== id && a === m);
+    if (clash) return { ok: false, error: 'That mouse button is already used for another action in Roger.', ...hotkeyState() };
+    hotkeys[id] = m; registerAll(); settings.hotkeys = hotkeys; saveSettings();
+    return { ok: true, ...hotkeyState() };
+  }
   const key = codeToKey(String(k && k.code));
   if (!key) return { ok: false, error: 'That key can\'t be used. Try a letter, number, F-key or symbol.', ...hotkeyState() };
   const accel = [k.ctrl && 'Control', k.alt && 'Alt', k.shift && 'Shift', key].filter(Boolean).join('+');
@@ -374,4 +465,4 @@ app.on('before-quit', () => {
   quitting = true;
   try { if (ovWin && !ovWin.isDestroyed()) ovWin.destroy(); } catch {}   // the hidden overlay window must not keep the app alive
 });
-app.on('will-quit', () => { globalShortcut.unregisterAll(); try { if (tray) tray.destroy(); } catch {} });
+app.on('will-quit', () => { globalShortcut.unregisterAll(); clearHeldKeys(false); if (mousePoll) clearInterval(mousePoll); try { if (tray) tray.destroy(); } catch {} });

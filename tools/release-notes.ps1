@@ -52,7 +52,7 @@ PowerShell:  ``Get-FileHash .\Roger-Setup-$Version.exe -Algorithm SHA256``   (it
 - Windows Defender scan of these exact files on $date : installer **$exeScan**, APK **$apkScan**.
 - VirusTotal scan of the Windows installer: **<paste the VirusTotal link here>**
 - VirusTotal scan of the Android APK: **<paste the VirusTotal link here>**
-- Roger is open source (MIT). It needs no admin rights, has no keyboard hooks, no ads and no trackers.
+- Roger is open source (MIT). It needs no admin rights, has no keyboard hooks (it only checks whether your own talk key or chosen mouse button is still held), no ads and no trackers.
   Read ``PRIVACY-AND-SECURITY.md`` for exactly what it does and which servers it talks to, and ``SECURITY.md`` for the Android signing key fingerprint.
 - Windows may warn about a new, unsigned program ("Windows protected your PC"): that is about reputation, not behaviour. Choose **More info > Run anyway**.
   Android may show a Play Protect notice: choose **Install anyway**. Never turn off your antivirus for this.
