@@ -466,8 +466,8 @@
       <h3>Sign out</h3>
       <div class="row"><span class="note" style="flex:1;margin:0">Next time you'll type your username and password again.</span><button class="ghost" id="signOutBtn" type="button">Sign out</button></div>
       <h3>Privacy</h3>
-      <p class="note"><b>Your voice:</b> sent over an encrypted connection to the Roger server, which passes it on to the people on your channel. It is <b>not end-to-end encrypted</b>, so the person who runs the server could technically access it.</p>
-      <p class="note"><b>History:</b> so people can replay what they missed, the server keeps recent voice messages in its memory only: up to 40 per channel, for no more than 6 hours, and about 30 minutes of audio in total. They are never saved to a disk or the database, and are wiped whenever the server restarts or goes to sleep.</p>
+      <p class="note"><b>Your voice:</b> sent over an encrypted connection to the Roger server, which passes it on to the people on your channel. When every device on the channel supports it, it is compressed first (Opus), which uses about a tenth of the data. It is <b>not end-to-end encrypted</b>, so the person who runs the server could technically access it.</p>
+      <p class="note"><b>History:</b> so people can replay what they missed, the server keeps recent voice messages in its memory only: up to 40 per channel, for no more than 6 hours, and capped in total size. They are never saved to a disk or the database, and are wiped whenever the server restarts or goes to sleep.</p>
       <p class="note"><b>Your account:</b> the server stores your username, your role, your last callsign, and a scrambled (hashed) copy of your password, never the password itself. Moderator actions such as kicks and resets are written to a log. Roger has no ads or trackers.</p>
       <p class="note"><b>Good habits:</b> never reuse a password from another account here, and don't share your login.</p>
     </div>
@@ -682,7 +682,7 @@
       const pcm = new Int16Array(out.length);
       for (let k = 0; k < out.length; k++) { const s = Math.max(-1, Math.min(1, out[k])); pcm[k] = s < 0 ? s * 0x8000 : s * 0x7fff; }
       if (micTest.rec) { micTest.frames.push(pcm.buffer.slice(0)); micTest.peak = Math.max(micTest.peak, levelPct); }
-      if (ptt === 'live') { if (ws && ws.readyState === 1) ws.send(pcm.buffer); }
+      if (ptt === 'live') txFrame(pcm.buffer);
       else if ((ptt === 'pending' || ptt === 'rec') && queue.length < MAX_FRAMES) queue.push(pcm.buffer);
       else if (ptt === 'idle') { preroll.push(pcm.buffer); if (preroll.length > 14) preroll.shift(); }   // ~0.3 s lead-in for VOX
     };
@@ -752,19 +752,158 @@
   // Each speaker gets their own playback timeline, so several people talking at once in an open net are mixed
   // (their audio overlaps) instead of being chopped together one chunk after another.
   const idName = new Map();              // connection id -> callsign (for per-person volume)
-  function playFrame(chId, spkId, buf) {
-    if (!ctx || !playBus || selfDeaf) return;                  // deafened: voices are dropped, not just turned down
-    const pcm = new Int16Array(buf.buffer, buf.byteOffset, buf.byteLength >> 1);
-    const ab = ctx.createBuffer(1, pcm.length, RATE);
-    const d = ab.getChannelData(0);
-    for (let i = 0; i < pcm.length; i++) d[i] = pcm[i] / 32768;
+  // ---- playback with a self-adjusting cushion ("jitter buffer") ----
+  // Voice arrives in bursts: the internet delivers it unevenly, and a busy PC (a game running) delays the page now and then. So audio is
+  // never played the instant it arrives. It is queued a little ahead of time (the "cushion"), and a late burst is absorbed instead of
+  // causing a gap. The cushion starts at 0.18 s. If a gap does happen in the middle of someone speaking, the cushion grows (up to 0.9 s),
+  // so the same bump never cuts the audio twice; between messages it shrinks back slowly. This is for the listener's connection as a
+  // whole, not per speaker.
+  const jbuf = { base: 0.18, lead: 0.18, max: 0.9 };
+  function schedule(key, floats, spkId, rate) {
+    const ab = ctx.createBuffer(1, floats.length, rate || RATE);
+    ab.getChannelData(0).set(floats);
     const s = ctx.createBufferSource(); s.buffer = ab;
     const who = idName.get(spkId);
     s.connect(who ? spkGain(who) : playBus);
-    const now = ctx.currentTime, key = chId + ':' + spkId;
+    const now = ctx.currentTime;
     let t = nextT.get(key) || 0;
-    if (t < now + 0.02) t = now + 0.09;
+    if (t < now + 0.002) {                                      // the queue has run dry (or this is the first piece)
+      const sinceEnd = now - t;
+      if (t > 0 && sinceEnd < 0.4) {                            // it ran dry mid-speech: a real gap
+        jbuf.lead = Math.min(jbuf.max, jbuf.lead + 0.1);        // so the NEXT message starts with a bigger cushion
+        t = now + 0.03;                                         // but carry on right away: what was held up arrives in a burst, which refills the cushion by itself
+      } else {                                                  // a fresh message
+        jbuf.lead = Math.max(jbuf.base, jbuf.lead - 0.03);      // let the cushion shrink back a little
+        t = now + jbuf.lead;
+      }
+    }
     s.start(t); nextT.set(key, t + ab.duration);
+  }
+  function playFrame(chId, spkId, buf) {                        // raw 16 kHz audio (the original format)
+    if (!ctx || !playBus || selfDeaf) return;                  // deafened: voices are dropped, not just turned down
+    const pcm = new Int16Array(buf.buffer, buf.byteOffset, buf.byteLength >> 1);
+    const f = new Float32Array(pcm.length);
+    for (let i = 0; i < pcm.length; i++) f[i] = pcm[i] / 32768;
+    schedule(chId + ':' + spkId, f, spkId);
+  }
+
+  // ---- compressed voice (Opus): about 10x less data than raw audio, same sound for speech ----
+  // A transmission is a series of messages: [count][count x ([length 2 bytes][Opus packet of 20 ms])]. Everything uses the browser's own
+  // WebCodecs. If this device can't do it, nothing changes: raw audio is used (and so is raw audio for everyone on a channel where
+  // even one person's device can't do Opus).
+  const OPUS_ENC = { codec: 'opus', sampleRate: 16000, numberOfChannels: 1, bitrate: 24000, opus: { application: 'voip', signal: 'voice', frameDuration: 20000, complexity: 5 } };
+  const OPUS_DEC = { codec: 'opus', sampleRate: 16000, numberOfChannels: 1 };
+  let opusCaps = false;
+  async function detectOpus() {
+    try {
+      if (typeof AudioEncoder === 'undefined' || typeof AudioDecoder === 'undefined' || typeof AudioData === 'undefined' || typeof EncodedAudioChunk === 'undefined') return false;
+      const e = await AudioEncoder.isConfigSupported(OPUS_ENC), d = await AudioDecoder.isConfigSupported(OPUS_DEC);
+      return !!(e && e.supported && d && d.supported);
+    } catch { return false; }
+  }
+  detectOpus().then((v) => { opusCaps = v; if (v && ws && ws.readyState === 1 && me) send({ type: 'caps', opus: true }); });
+  const wantCodec = (chName) => { const c = chState.find((x) => x.name === chName); return (opusCaps && c && c.opusOk) ? 'opus' : 'pcm'; };
+
+  // Receiving: one decoder per speaker, started fresh for each new message and dropped when they go quiet.
+  const decs = new Map();               // "channel:speaker" -> { dec, last, ts, bad }
+  function makeDecoder(key, spkId) {
+    const d = { last: 0, ts: 0, bad: false, dec: null };
+    d.dec = new AudioDecoder({
+      output: (ad) => {
+        const f = new Float32Array(ad.numberOfFrames), sr = ad.sampleRate;       // (the browser may hand back 48 kHz audio whatever we asked for: use its real rate)
+        try { ad.copyTo(f, { planeIndex: 0, format: 'f32-planar' }); } catch { ad.close(); return; }
+        ad.close();
+        if (ctx && playBus && !selfDeaf) schedule(key, f, spkId, sr);
+      },
+      error: () => { d.bad = true; },
+    });
+    d.dec.configure(OPUS_DEC);
+    return d;
+  }
+  function eachPacket(bytes, fn) {                                // walks the [count][length][packet]... layout
+    let p = 0;
+    while (p < bytes.length) {
+      const n = bytes[p++];
+      for (let i = 0; i < n && p + 2 <= bytes.length; i++) {
+        const len = (bytes[p] << 8) | bytes[p + 1]; p += 2;
+        if (len < 1 || p + len > bytes.length) return;
+        fn(bytes.subarray(p, p + len)); p += len;
+      }
+    }
+  }
+  function playOpus(chId, spkId, bytes) {
+    if (!ctx || !playBus || selfDeaf || !opusCaps) return;
+    const key = chId + ':' + spkId, now = performance.now();
+    let d = decs.get(key);
+    if (!d || d.bad || now - d.last > 1500) { if (d) { try { d.dec.close(); } catch {} } d = makeDecoder(key, spkId); decs.set(key, d); }
+    d.last = now;
+    eachPacket(bytes, (pk) => {
+      try { d.dec.decode(new EncodedAudioChunk({ type: 'key', timestamp: d.ts, data: pk })); d.ts += 20000; } catch { d.bad = true; }
+    });
+  }
+  setInterval(() => { const now = performance.now(); for (const [k, d] of decs) if (now - d.last > 5000) { try { d.dec.close(); } catch {} decs.delete(k); } }, 3000);
+
+  // Sending: raw audio frames are always what the microphone produces. At the moment of sending they are either passed on as they are
+  // or compressed. Two 20 ms packets travel in each message (half as many messages for the server and the network to handle).
+  let txs = null, txEnding = false, pendingDown = false;
+  function txStart(codec) {
+    txAbort();
+    if (codec !== 'opus' || !opusCaps) { txs = { codec: 'pcm' }; return; }
+    const t = { codec: 'opus', batch: [], ts: 0, ok: true, enc: null };
+    try {
+      t.enc = new AudioEncoder({
+        output: (chunk) => { const b = new Uint8Array(chunk.byteLength); chunk.copyTo(b); t.batch.push(b); if (t.batch.length >= 2) txFlushBatch(t); },
+        error: () => { t.ok = false; },
+      });
+      t.enc.configure(OPUS_ENC);
+    } catch { t.ok = false; }
+    txs = t;
+  }
+  function txFlushBatch(t) {
+    if (!t.batch.length) return;
+    let n = 1; for (const b of t.batch) n += 2 + b.length;
+    const out = new Uint8Array(n); out[0] = t.batch.length; let p = 1;
+    for (const b of t.batch) { out[p++] = b.length >> 8; out[p++] = b.length & 255; out.set(b, p); p += b.length; }
+    t.batch = [];
+    if (ws && ws.readyState === 1) ws.send(out.buffer);
+  }
+  function txFrame(buf) {                                          // buf = an ArrayBuffer of 16 kHz Int16 audio
+    if (!txs || txs.codec === 'pcm') { if (ws && ws.readyState === 1) ws.send(buf); return; }
+    if (!txs.ok) return;
+    const pcm = new Int16Array(buf);
+    try {
+      const ad = new AudioData({ format: 's16', sampleRate: 16000, numberOfFrames: pcm.length, numberOfChannels: 1, timestamp: txs.ts, data: pcm });
+      txs.ts += Math.round(pcm.length * 1e6 / 16000);
+      txs.enc.encode(ad); ad.close();
+    } catch { txs.ok = false; }
+  }
+  async function txEnd() {                                         // finish a transmission: send everything still being compressed, in order
+    const t = txs; txs = null;
+    if (t && t.codec === 'opus' && t.enc) { try { if (t.ok) await t.enc.flush(); } catch {} txFlushBatch(t); try { t.enc.close(); } catch {} }
+  }
+  function txAbort() {                                             // drop a transmission without sending the rest (disconnected, cut off...)
+    const t = txs; txs = null;
+    if (t && t.codec === 'opus' && t.enc) { try { t.enc.close(); } catch {} }
+  }
+
+  // Past messages: an Opus one is decoded here into the same raw audio the player already knows.
+  async function decodeOpusHistory(id, bytes) {
+    try {
+      const parts = []; let total = 0, srate = RATE;
+      const dec = new AudioDecoder({ output: (ad) => { const f = new Float32Array(ad.numberOfFrames); srate = ad.sampleRate; ad.copyTo(f, { planeIndex: 0, format: 'f32-planar' }); ad.close(); parts.push(f); total += f.length; }, error: () => {} });
+      dec.configure(OPUS_DEC);
+      let ts = 0; eachPacket(bytes, (pk) => { dec.decode(new EncodedAudioChunk({ type: 'key', timestamp: ts, data: pk })); ts += 20000; });
+      await dec.flush(); dec.close();
+      let all = new Float32Array(total), o = 0; for (const f of parts) { all.set(f, o); o += f.length; }
+      if (srate !== RATE) {                                          // bring it to 16 kHz like every other saved message (averaging neighbours also smooths it)
+        const ratio = srate / RATE, n = Math.floor(all.length / ratio), r = new Float32Array(n);
+        for (let i = 0; i < n; i++) { const a = Math.floor(i * ratio), b = Math.max(a + 1, Math.floor((i + 1) * ratio)); let s = 0; for (let k = a; k < b && k < all.length; k++) s += all[k]; r[i] = s / (b - a); }
+        all = r;
+      }
+      const pcm = new Int16Array(all.length);
+      for (let i = 0; i < all.length; i++) { const s = Math.max(-1, Math.min(1, all[i])); pcm[i] = s < 0 ? s * 32768 : s * 32767; }
+      gotHistoryAudio(id, pcm);
+    } catch { const w = histWait.get(id); if (w) { histWait.delete(id); w(null); } }
   }
   // Helpers for channel state: who is talking, and is the channel "busy" for me?
   function talkersOf(c) { return (c && (c.talkers || (c.talker ? [c.talker] : []))) || []; }
@@ -792,7 +931,8 @@
   // ---- Deafen (your own, on this device) ----
   function setSelfDeaf(v) {
     selfDeaf = !!v; applyMaster();
-    if (selfDeaf) { for (const t of nextT.keys()) nextT.delete(t); }              // forget the playback schedule so nothing queued plays on later
+    if (selfDeaf) { for (const t of [...nextT.keys()]) nextT.delete(t); }        // forget the playback schedule so nothing queued plays on later
+    send({ type: 'deaf', on: selfDeaf });                                         // the server stops sending you audio at all while you are deafened (saves your data too)
     render();
   }
   const toggleSelfDeaf = () => setSelfDeaf(!selfDeaf);
@@ -803,7 +943,10 @@
   };
 
   // ---------- network ----------
-  function send(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
+  function send(o) {
+    if ((o.type === 'ptt_start' || o.type === 'ptt_wait') && o.codec === undefined) o.codec = wantCodec(o.ch);   // which voice format we'd like for this message
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify(o));
+  }
 
   const isStaff = () => !!me && !!me.user && (me.user.role === 'admin' || me.user.role === 'mod');
   const ROLE_LABEL = { admin: 'ADMIN', mod: 'MOD' };
@@ -816,7 +959,7 @@
     wantOnline = false; stopKeepAlive();
     if (!keepToken) { token = ''; store.set('tok', ''); }
     if (ws) { try { ws.close(); } catch {} }
-    stopHistory(); cancelOutboxQuiet();
+    stopHistory(); cancelOutboxQuiet(); txAbort();
     me = null; chState = []; ptt = 'idle'; held = false; queue = []; joined = new Set(joined);
     adminData = null; adTab = 'people'; adSearch = '';                      // the next person to sign in starts with a clean admin panel
     $('credModal').classList.add('hidden'); $('credList').replaceChildren(); $('credModal').dataset.text = '';
@@ -842,8 +985,10 @@
       if (typeof e.data !== 'string') {
         const dv = new DataView(e.data);
         const chId = dv.getUint16(0);
-        if (chId === 0xFFFF) { gotHistoryAudio(dv.getUint32(2), new Int16Array(e.data.slice(6))); return; }
-        playFrame(chId, dv.getUint32(2), new Uint8Array(e.data, 6));       // 6-byte header: channel + who is speaking
+        if (chId === 0xFFFF) { gotHistoryAudio(dv.getUint32(2), new Int16Array(e.data.slice(6))); return; }                // a past message, raw audio
+        if (chId === 0xFFFE) { decodeOpusHistory(dv.getUint32(2), new Uint8Array(e.data, 6)); return; }                    // a past message, compressed
+        if (chId & 0x8000) { playOpus(chId & 0x7FFF, dv.getUint32(2), new Uint8Array(e.data, 6)); return; }                // live, compressed
+        playFrame(chId, dv.getUint32(2), new Uint8Array(e.data, 6));       // live, raw: 6-byte header = channel + who is speaking
         return;
       }
       const m = JSON.parse(e.data);
@@ -856,6 +1001,8 @@
         const rb = $('meRole'); rb.textContent = ROLE_LABEL[me.user.role] || (me.user.role === 'joint' ? 'JOINT' : ''); rb.classList.toggle('hidden', !rb.textContent);
         $('adminBtn').classList.toggle('hidden', !isStaff());
         $('conn').classList.add('on');
+        send({ type: 'caps', opus: opusCaps });                           // tell the server what this device can do, before joining anything
+        if (selfDeaf) send({ type: 'deaf', on: true });                  // (still deafened after a reconnect)
         joined.forEach((c) => send({ type: 'join', ch: c }));
         if (!$('login').classList.contains('hidden')) {
           $('login').classList.add('hidden'); $('app').classList.remove('hidden');
@@ -911,13 +1058,13 @@
         const w = histWait.get(m.id); if (w) { histWait.delete(m.id); w(null); }
       } else if (m.type === 'granted') {
         // The server hands the floor to whoever has been waiting longest, the instant it frees up.
-        if (outbox && (outbox.state === 'req' || outbox.state === 'wait') && outbox.ch === m.ch && ptt === 'idle') { alertSnd('clear'); sendOutbox(); }
+        if (outbox && (outbox.state === 'req' || outbox.state === 'wait') && outbox.ch === m.ch && ptt === 'idle') { alertSnd('clear'); sendOutbox(m.codec); }
         else if (ptt === 'pending') {
           ptt = 'live'; alertSnd('clear');
-          queue.forEach((b) => ws.send(b)); queue = [];
+          txStart(m.codec); queue.forEach((b) => txFrame(b)); queue = [];       // (m.codec = the voice format the server settled on for this message)
         } else if (ptt === 'rec' && held && m.ch === tx) {         // still holding the key: go on air with what we recorded
           ptt = 'live'; alertSnd('clear');
-          queue.forEach((b) => ws.send(b)); queue = [];
+          txStart(m.codec); queue.forEach((b) => txFrame(b)); queue = [];
         } else send({ type: 'ptt_end' });                     // nobody wants the floor any more
         render();
       } else if (m.type === 'denied') {
@@ -925,13 +1072,13 @@
         else if (ptt === 'pending') { if (held && cfg.busyMode !== 'warn') { ptt = 'rec'; alertSnd('busy'); send({ type: 'ptt_wait', ch: tx }); } else { ptt = 'idle'; held = false; queue = []; alertSnd('busy'); } }
         render();
       } else if (m.type === 'timeout') {
-        ptt = 'idle'; held = false; queue = []; outbox = null; alertSnd('busy'); render();
+        txAbort(); ptt = 'idle'; held = false; queue = []; outbox = null; alertSnd('busy'); render();
       }
     };
     ws.onclose = () => {
       $('conn').classList.remove('on');
       if (wantOnline) alertSnd('connError');
-      ptt = 'idle'; held = false; queue = []; outbox = null; chState = []; render();
+      txAbort(); ptt = 'idle'; held = false; queue = []; outbox = null; chState = []; render();
       if (wantOnline) { setTimeout(connect, reconnectDelay); reconnectDelay = Math.min(reconnectDelay * 1.6, 8000); }
     };
   }
@@ -954,7 +1101,7 @@
     }
     chState = list;
     const mine = list.find((c) => c.name === tx);
-    if (ptt === 'live' && mine && !talkersOf(mine).includes(mineId)) ptt = 'idle';
+    if (ptt === 'live' && mine && !talkersOf(mine).includes(mineId)) { txAbort(); ptt = 'idle'; }
     // Still holding the button while the channel was busy, and it's clear now: go on air.
     if (ptt === 'rec' && held && mine && !busyIn(mine)) { ptt = 'pending'; send({ type: 'ptt_start', ch: tx }); }
     tryOutbox();
@@ -969,16 +1116,18 @@
     if (!busyIn(ch)) send({ type: 'ptt_wait', ch: outbox.ch });         // (normally the server has already granted it)
   }
 
-  async function sendOutbox() {
+  async function sendOutbox(codec) {
     const box = outbox; box.state = 'send'; render();
+    txStart(codec);
     const t0 = performance.now(); let sentMs = 0;
     for (const f of box.frames) {
-      if (outbox !== box || !ws || ws.readyState !== 1) return;
-      ws.send(f); sentMs += f.byteLength / 2 / (RATE / 1000);
+      if (outbox !== box || !ws || ws.readyState !== 1) { txAbort(); return; }
+      txFrame(f); sentMs += f.byteLength / 2 / (RATE / 1000);
       const wait = t0 + sentMs - performance.now() - 40;       // stay ~40 ms ahead of real time
       if (wait > 0) await sleep(wait);
     }
-    if (outbox === box) { send({ type: 'ptt_end' }); alertSnd('outgoingEnd'); outbox = null; render(); }
+    if (outbox === box) { await txEnd(); if (outbox === box) { send({ type: 'ptt_end' }); alertSnd('outgoingEnd'); outbox = null; render(); } }
+    else txAbort();
   }
 
   function cancelOutbox() {
@@ -993,6 +1142,7 @@
   function txChan() { return chState.find((c) => c.name === tx); }
 
   function pttDown() {
+    if (txEnding) { pendingDown = true; return; }                   // the last message is still being finished off (a few milliseconds): start right after
     if (ptt !== 'idle' || !me || !joined.has(tx) || !ctx) return;
     if (myRestr(tx).mute) { alertSnd('busy'); return; }                // muted by a moderator on this channel (the server refuses anyway)
     if (outbox) { alertSnd('busy'); return; }      // your earlier message is still queued or being sent: never replace it (it would be lost)
@@ -1006,9 +1156,13 @@
   }
 
   function pttUp() {
+    if (pendingDown) { pendingDown = false; return; }               // released before the next message had even started
     if (ptt === 'idle') return;
     const prev = ptt; ptt = 'idle'; held = false; voxActive = false;
-    if (prev === 'live') { send({ type: 'ptt_end' }); alertSnd('outgoingEnd'); queue = []; }
+    if (prev === 'live') {
+      txEnding = true; alertSnd('outgoingEnd'); queue = [];
+      txEnd().then(() => { send({ type: 'ptt_end' }); txEnding = false; if (pendingDown) { pendingDown = false; pttDown(); } });   // finish compressing, send the tail, THEN end
+    }
     else if (queue.length >= MIN_MSG_FRAMES) {
       // Released while busy (or before the grant arrived): keep what was said and send it as soon as we can.
       outbox = { ch: tx, frames: queue, state: prev === 'pending' ? 'req' : 'wait' };
@@ -1103,6 +1257,7 @@
   // Plays one past message; resolves when it has finished (or false if it couldn't be played).
   async function playHistory(item) {
     if (!ctx) return false;
+    if (selfDeaf) { toast('You are deafened, so replays are silent. Press Deafen again to hear.', 'info'); return false; }
     stopHistory(); histStop = false;
     histPlayingId = item.id; renderHistory();
     const pcm = await fetchAudio(item.id);

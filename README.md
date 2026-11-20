@@ -17,6 +17,7 @@ Parts:
    The installer for it is served by the server at /Roger.apk.
 
 ## How talking works
+- **Voice is compressed** with Opus (about a tenth of the data) whenever every device on the channel supports it, and falls back to plain audio otherwise. Playback keeps a self-adjusting cushion so a bumpy connection doesn't chop the audio.
 - **Moderators** can mute (can't talk) or deafen (can't hear) someone on a channel from the channel's people list. Anyone can press **Deafen** to stop hearing everything for themselves (Windows app: it can have its own key).
 - The server gives each channel to one talker at a time. If someone is talking, your button
   turns red and you can't key up until they finish.

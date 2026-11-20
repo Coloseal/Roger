@@ -11,9 +11,9 @@ and an Android app. The source for all of it is in this repository, so you can r
 - **Voice is encrypted on the way to the server, but not end-to-end.** See "Voice" below.
 
 ## Voice
-- Your voice travels over an encrypted connection (HTTPS / secure WebSocket) to the server, which passes it to the people on your channel.
+- Your voice travels over an encrypted connection (HTTPS / secure WebSocket) to the server, which passes it to the people on your channel. When every device on the channel supports it, it is compressed first with the Opus codec (about a tenth of the data); otherwise plain audio is sent. The server relays the compressed packets as they are.
 - It is **not end-to-end encrypted**. The server relays the audio, so whoever runs the server could technically access it.
-- For the **History** (replay) feature, the server keeps recent voice messages **in memory only**: at most 40 per channel, for no more than 6 hours, and about 30 minutes of audio in total. Nothing is written to a disk or the database. It is wiped whenever the server restarts or sleeps.
+- For the **History** (replay) feature, the server keeps recent voice messages **in memory only**: at most 40 per channel, for no more than 6 hours, and capped in total size. Nothing is written to a disk or the database. It is wiped whenever the server restarts or sleeps.
 - The microphone is used only while you are talking (or while you run the microphone test or turn on VOX). Roger does not record you on your own device.
 
 ## Accounts
@@ -22,7 +22,7 @@ It also keeps a log of moderator actions (kicks, resets, mutes, deafens, and so 
 
 ## Moderators and Deafen
 - **Moderator mute / deafen:** a moderator or the owner can **mute** someone on a channel (they can't talk there) or **deafen** them (they hear nothing from it). Everyone on the channel can see who is muted or deafened, the person is told who did it, and each action is written to the moderator log. A moderator can't do this to the owner or another moderator. It's held in the server's memory, lasts at most 12 hours, and is cleared if the server restarts.
-- **Your own Deafen:** the Deafen button (and an optional key or mouse button in the Windows app) silences everything you would hear, entirely on your own device. You can still talk. Nobody else is told.
+- **Your own Deafen:** the Deafen button (and an optional key or mouse button in the Windows app) silences everything you would hear. You can still talk. The server is told, only so that it stops sending you audio (which saves your data); nobody else is told.
 
 ## The website
 - Served over HTTPS only, with HSTS, a strict Content-Security-Policy (only the page's own script may run; nothing from other websites), a permissions policy (microphone for this site only), and anti-framing headers.

@@ -59,11 +59,20 @@ const isDeaf = (c, ch) => !!(restrictionOf(c, ch) || {}).deaf;
 //   'open'  = open net: everyone can talk at the same time and you hear them all mixed together
 const modes = {};            // channel name -> 'open' (only open ones are stored)
 
+// Channel ids ride in a 16-bit field of every audio packet. The top bits are used as format flags (and 0xFFFF / 0xFFFE mark history
+// replays), so ids are kept small and reused, however many custom channels come and go over the months.
+const MAX_CHANNEL_ID = 0x6FFF;
+function allocChannelId() {
+  const used = new Set([...channels.values()].map((c) => c.id));
+  for (let i = 0; i < MAX_CHANNEL_ID; i++) { nextChannelId = nextChannelId % MAX_CHANNEL_ID + 1; if (!used.has(nextChannelId)) return nextChannelId; }
+  return null;
+}
 function getChannel(name, isDefault = false, desc = '') {
   let ch = channels.get(name);
   if (!ch) {
     if (channels.size >= MAX_CHANNELS) return null;
-    ch = { id: nextChannelId++, name, isDefault, desc, members: new Set(), talkers: new Set(), waiters: [], mode: modes[name] === 'open' ? 'open' : 'queue' };
+    const id = allocChannelId(); if (id === null) return null;
+    ch = { id, name, isDefault, desc, members: new Set(), talkers: new Set(), waiters: [], mode: modes[name] === 'open' ? 'open' : 'queue' };
     channels.set(name, ch);
   }
   return ch;
@@ -77,6 +86,19 @@ const HISTORY_PER_CHANNEL = 40;
 const HISTORY_MAX_BYTES = 60 * 1024 * 1024;   // ~30 min of audio across all channels
 const HISTORY_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const MIN_MSG_BYTES = 9600;                   // ~0.3 s at 16 kHz Int16: ignore blips
+// Voice formats. "pcm" = raw 16 kHz Int16 (works everywhere, ~256 kbps). "opus" = Opus packets, ~24 kbps (about 10x less data).
+// An Opus transmission is a series of messages: [count 1..8][count x ([length u16][packet])], each packet being 20 ms of audio.
+const OPUS_PACKET_MS = 20, OPUS_MIN_PACKETS = 15, OPUS_MAX_MSG_BYTES = 2400, OPUS_MAX_PER_MSG = 8;
+const SLOW_CLIENT_BYTES = 128 * 1024;         // a listener this far behind (about 4 s of raw audio) gets live audio only, not a growing backlog
+const opusAll = (ch) => [...ch.members].every((c) => !c.user || c.opus);   // can everyone in this channel decode Opus?
+// Is this a well-formed Opus message? (the server relays it untouched, but never forwards garbage)
+function opusPackets(buf) {
+  if (!buf || buf.length < 3 || buf.length > OPUS_MAX_MSG_BYTES) return 0;
+  const n = buf[0]; if (n < 1 || n > OPUS_MAX_PER_MSG) return 0;
+  let p = 1;
+  for (let i = 0; i < n; i++) { if (p + 2 > buf.length) return 0; const len = buf.readUInt16BE(p); p += 2 + len; if (len < 1 || p > buf.length) return 0; }
+  return p === buf.length ? n : 0;
+}
 let nextMsgId = 1, history = [], historyBytes = 0;
 
 const metaOf = (m) => ({ id: m.id, from: m.from, ts: m.ts, ms: m.ms });
@@ -91,9 +113,11 @@ function addHistory(item) {
 
 function finalizeRecording(client) {
   const rec = client.rec; client.rec = null;
-  if (!rec || rec.bytes < MIN_MSG_BYTES) return;
-  const pcm = Buffer.concat(rec.chunks, rec.bytes);
-  const item = { id: nextMsgId++, ch: rec.ch.name, from: client.name, ts: rec.ts, ms: Math.round(pcm.length / 32), pcm };
+  if (!rec) return;
+  const opus = rec.codec === 'opus';
+  if (opus ? rec.frames < OPUS_MIN_PACKETS : rec.bytes < MIN_MSG_BYTES) return;
+  const pcm = Buffer.concat(rec.chunks, rec.bytes);          // (for an Opus message this holds the packets, not raw audio)
+  const item = { id: nextMsgId++, ch: rec.ch.name, from: client.name, ts: rec.ts, ms: opus ? rec.frames * OPUS_PACKET_MS : Math.round(pcm.length / 32), codec: rec.codec || 'pcm', pcm };
   addHistory(item);
   const msg = JSON.stringify({ type: 'history_add', ch: item.ch, item: metaOf(item) });
   for (const m of rec.ch.members) if (m.ws.readyState === 1) m.ws.send(msg);
@@ -125,6 +149,7 @@ function snapshot(forStaff) {
     desc: ch.desc || '',
     restricted: ch.isDefault && ch.name !== 'RADIO CHECK',   // preset operational channels: only join if your element is listed
     mode: ch.mode,
+    opusOk: opusAll(ch),                                          // true when everyone here can use the compressed voice format
     talker: ch.talkers.size ? [...ch.talkers][0].id : null,       // the first one talking (in queue mode, the only one)
     talkers: [...ch.talkers].map((c) => c.id),                    // everyone talking right now (several in an open net)
     members: [...ch.members].filter((c) => c.user).map((c) => {
@@ -149,13 +174,16 @@ function notifyStaff(obj) { for (const c of clients.values()) if (isStaff(c)) se
 function grantFloor(ch, client) {
   if (client.talkingIn) releaseFloor(client.talkingIn, client, client.talkingIn === ch);
   ch.waiters = ch.waiters.filter((w) => w !== client);
+  // Compressed voice only if the talker asked for it, can do it, and everyone on the channel can decode it right now.
+  const codec = client.wantCodec === 'opus' && client.opus && opusAll(ch) ? 'opus' : 'pcm';
+  client.txCodec = codec;
   ch.talkers.add(client); client.talkingIn = ch; client.lastFrame = Date.now();
-  client.rec = { ch, chunks: [], bytes: 0, ts: Date.now() };
+  client.rec = { ch, chunks: [], bytes: 0, frames: 0, ts: Date.now(), codec };
   clearTimeout(client.talkTimer);
   client.talkTimer = setTimeout(() => {                         // nobody can hold the channel forever
     if (ch.talkers.has(client)) { releaseFloor(ch, client); sendTo(client, { type: 'timeout', ch: ch.name }); broadcastState(); }
   }, MAX_TALK_MS);
-  sendTo(client, { type: 'granted', ch: ch.name });
+  sendTo(client, { type: 'granted', ch: ch.name, codec });
 }
 
 // People who tried to talk while the channel was busy are waiting in line. The moment the floor frees up it goes
@@ -362,13 +390,26 @@ wss.on('connection', (ws) => {
       const ch = client.talkingIn;
       if (!client.user || !ch || !ch.talkers.has(client)) return;
       if (isMuted(client, ch)) { releaseFloor(ch, client); sendTo(client, { type: 'muted', ch: ch.name }); broadcastState(); return; }   // muted while talking: cut off
+      const opus = client.txCodec === 'opus';
+      const packets = opus ? opusPackets(data) : 0;
+      if (opus && !packets) return;                                    // not a valid Opus message: never forwarded
       client.lastFrame = Date.now();
-      // 6-byte header: which channel (2 bytes) + WHO is speaking (4 bytes), so several speakers in an open net stay separate
+      // 6-byte header: which channel (2 bytes) + WHO is speaking (4 bytes), so several speakers in an open net stay separate.
+      // The top bit of the channel field (0x8000) marks an Opus message; without it the payload is raw 16 kHz Int16 audio.
       const out = Buffer.allocUnsafe(6 + data.length);
-      out.writeUInt16BE(ch.id, 0); out.writeUInt32BE(client.id, 2);
+      out.writeUInt16BE(opus ? (0x8000 | ch.id) : ch.id, 0); out.writeUInt32BE(client.id, 2);
       data.copy ? data.copy(out, 6) : Buffer.from(data).copy(out, 6);
-      for (const m of ch.members) if (m !== client && m.ws.readyState === 1 && !isDeaf(m, ch)) m.ws.send(out, { binary: true });   // deafened people get nothing
-      if (client.rec && client.rec.bytes < MAX_TALK_MS * 32) { client.rec.chunks.push(Buffer.from(data)); client.rec.bytes += data.length; }
+      for (const m of ch.members) {
+        if (m === client || m.ws.readyState !== 1) continue;
+        if (m.selfDeaf || isDeaf(m, ch)) continue;                       // deafened (by themselves or a moderator): they get no audio, so no data is spent on them
+        if (opus && !m.opus) continue;                                   // (can't decode it; the talker is only given Opus when everyone can)
+        if (m.ws.bufferedAmount > SLOW_CLIENT_BYTES) continue;           // far behind: skip rather than pile up a backlog and delay everything
+        m.ws.send(out, { binary: true });
+      }
+      if (client.rec) {
+        if (opus) { if (client.rec.frames < MAX_TALK_MS / OPUS_PACKET_MS) { client.rec.chunks.push(Buffer.from(data)); client.rec.bytes += data.length; client.rec.frames += packets; } }
+        else if (client.rec.bytes < MAX_TALK_MS * 32) { client.rec.chunks.push(Buffer.from(data)); client.rec.bytes += data.length; }
+      }
       return;
     }
 
@@ -377,6 +418,13 @@ wss.on('connection', (ws) => {
 
     if (msg.type === 'hello') { await handleHello(client, msg); return; }
     if (!client.user) return;                                          // nothing else works until you've signed in
+
+    if (msg.type === 'caps') {                                          // what this device can do (sent right after signing in)
+      const opus = !!msg.opus;
+      if (opus !== !!client.opus) { client.opus = opus; broadcastState(); }
+      return;
+    }
+    if (msg.type === 'deaf') { client.selfDeaf = !!msg.on; return; }   // "Deafen" on their own device: stop sending them audio altogether
 
     if (msg.type === 'join') {
       const name = cleanName(msg.ch, MAX_NAME).toUpperCase();
@@ -393,8 +441,9 @@ wss.on('connection', (ws) => {
       // Replay a past message. Only members of that message's channel may fetch it.
       const item = history.find((h) => h.id === msg.id);
       if (!item || ![...client.channels].some((c) => c.name === item.ch) || isDeaf(client, channels.get(item.ch))) { sendTo(client, { type: 'audio_missing', id: msg.id }); return; }   // (deafened = no replays either)
+      if (item.codec === 'opus' && !client.opus) { sendTo(client, { type: 'audio_missing', id: msg.id }); return; }   // (this device can't decode Opus)
       const out = Buffer.allocUnsafe(6 + item.pcm.length);
-      out.writeUInt16BE(0xFFFF, 0); out.writeUInt32BE(item.id, 2); item.pcm.copy(out, 6);
+      out.writeUInt16BE(item.codec === 'opus' ? 0xFFFE : 0xFFFF, 0); out.writeUInt32BE(item.id, 2); item.pcm.copy(out, 6);   // 0xFFFF = raw audio, 0xFFFE = Opus messages
       ws.send(out, { binary: true });
     } else if (msg.type === 'leave') {
       const ch = channels.get(String(msg.ch));
@@ -404,6 +453,7 @@ wss.on('connection', (ws) => {
       if (!ch || !ch.members.has(client)) return;
       if (isMuted(client, ch)) { sendTo(client, { type: 'muted', ch: ch.name }); return; }
       if (ch.mode !== 'open' && ch.talkers.size && !ch.talkers.has(client)) { sendTo(client, { type: 'denied', ch: ch.name, by: [...ch.talkers][0].name }); return; }
+      client.wantCodec = msg.codec === 'opus' ? 'opus' : 'pcm';
       grantFloor(ch, client);
       broadcastState();
     } else if (msg.type === 'ptt_wait') {
@@ -411,6 +461,7 @@ wss.on('connection', (ws) => {
       const ch = channels.get(String(msg.ch));
       if (!ch || !ch.members.has(client) || ch.talkers.has(client)) return;
       if (isMuted(client, ch)) { sendTo(client, { type: 'muted', ch: ch.name }); return; }
+      client.wantCodec = msg.codec === 'opus' ? 'opus' : 'pcm';
       if (!ch.waiters.includes(client)) ch.waiters.push(client);
       serveWaiters(ch); broadcastState();
     } else if (msg.type === 'ptt_unwait') {
