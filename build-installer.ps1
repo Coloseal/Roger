@@ -19,13 +19,19 @@ New-Item -ItemType Directory -Force $work | Out-Null
 # A test copy running from the build folder locks its files and makes the build fail: close it first.
 Get-Process -Name Roger -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$work\dist\*" } | Stop-Process -Force
 Start-Sleep -Seconds 3
-robocopy $src $work /E /XD (Join-Path $src 'dist') /NFL /NDL /NJH /NJS /NP | Out-Null
+# (node_modules is left out on purpose: the build folder keeps its own freshly installed copy, so an old local copy can never overwrite it.)
+robocopy $src $work /E /XD (Join-Path $src 'dist') (Join-Path $src 'node_modules') /NFL /NDL /NJH /NJS /NP | Out-Null
 
 Push-Location $work
 try {
-  if (-not (Test-Path node_modules\electron-builder)) { npm install }
+  # Always make sure the installed tools match package.json (so the build never silently uses an old Electron).
+  $ErrorActionPreference = 'Continue'      # npm prints harmless warnings on stderr
+  npm install --no-audit --no-fund
+  $installCode = $LASTEXITCODE
+  $ErrorActionPreference = 'Stop'
+  if ($installCode -ne 0) { throw "npm install failed, so the installer was not built." }
   # Electron's installer script is sometimes skipped by npm; make sure the runtime exists.
-  if (-not (Test-Path node_modules\electron\dist\electron.exe)) { npm rebuild electron }
+  if (-not (Test-Path node_modules\electron\dist\electron.exe)) { $ErrorActionPreference = 'Continue'; npm rebuild electron; $ErrorActionPreference = 'Stop' }
   $env:CSC_IDENTITY_AUTO_DISCOVERY = 'false'
   $started = Get-Date
   npm run dist

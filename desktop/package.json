@@ -1,6 +1,6 @@
 {
     "name": "roger-desktop",
-    "version": "1.5.0",
+    "version": "1.5.1",
     "description": "Roger - push-to-talk comms for squads",
     "main": "main.js",
     "author": "Roger",

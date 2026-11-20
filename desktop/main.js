@@ -419,6 +419,14 @@ function createWindow() {
   win.webContents.on('will-navigate', (e, url) => {
     if (!url.startsWith('file:') && new URL(url).origin !== SERVER_ORIGIN) e.preventDefault();
   });
+  // The mouse's back / forward buttons (and the keyboard's browser keys) would make the window go "back" in its page history.
+  // Roger is one page, so the only place "back" could go is the loading screen. Roger handles those buttons itself inside the page,
+  // so: (1) ignore the browser back/forward commands, and (2) once Roger's page has loaded, forget the loading screen
+  // (the window then has no earlier page to go back to, whatever sends the command).
+  win.on('app-command', (e, cmd) => { if (cmd === 'browser-backward' || cmd === 'browser-forward') e.preventDefault(); });
+  win.webContents.on('did-finish-load', () => {
+    try { if (win.webContents.getURL().startsWith(SERVER_URL)) win.webContents.navigationHistory.clear(); } catch {}
+  });
   win.webContents.on('did-fail-load', (_e, _code, _desc, url, isMain) => {
     if (isMain && url.startsWith(SERVER_URL)) setTimeout(loadClient, 1500);   // server dropped or asleep: retry
   });
