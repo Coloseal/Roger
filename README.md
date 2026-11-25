@@ -13,8 +13,10 @@ Parts:
 2. **Desktop app** (`desktop/`) - a Windows installer players just double-click. Everything it
    needs is inside; no Node, no setup. It also adds a **global talk key** that works while the
    game has focus. Players can alternatively just open the server's link in a browser.
-3. **Android app** (ndroid-app/) - a small shell around the same page, with a floating talk button and self-update.
+3. **Android app** (android-app/) - a small shell around the same page, with a floating talk button and self-update.
    The installer for it is served by the server at /Roger.apk.
+4. **Mac app** (Apple Silicon / arm64) - lives in its own repository (MAC-Roger); see "Mac app" below.
+   It connects to the same server, so Mac and Windows players are on the same channels.
 
 ## How talking works
 - **Voice is compressed** with Opus (about a tenth of the data) whenever every device on the channel supports it, and falls back to plain audio otherwise. Playback keeps a self-adjusting cushion so a bumpy connection doesn't chop the audio.
@@ -97,6 +99,14 @@ Installed apps check GitHub Releases for a newer version a few seconds after the
 
 Everyone running 1.2.0 or newer updates on their own. (Versions before 1.2.0 had no updater and
 need one manual install.) The repo must stay **public**. The file names must not be changed.
+
+## Mac app (Apple Silicon)
+The Mac app lives in its **own repository**, https://github.com/Coloseal/MAC-Roger, and connects to this same server, so Mac and Windows players
+are on the same channels. It can't be built on a Windows PC, so that repository builds it on GitHub's own Mac computers whenever you publish a
+release there. Its README explains the one-time macOS approval players have to do, and how to publish a Mac release.
+
+To make the folder for that repository from this project's code, run `.\build-mac-repo.ps1` (it writes `github-upload-mac`).
+Run it again after changing anything in `desktop\` so the Mac repository matches.
 
 ## Run locally for testing
 ```

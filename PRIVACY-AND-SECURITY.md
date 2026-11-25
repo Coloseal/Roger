@@ -38,6 +38,13 @@ It also keeps a log of moderator actions (kicks, resets, mutes, deafens, and so 
 - **Mouse buttons as talk keys (optional):** Windows can't use a mouse button as a hotkey, so if you set an action to the middle, back or forward button, the app watches that one button the same way (about 60 times a second). It installs no hook, can't see the other buttons or where you click, and does nothing at all if no action is set to a mouse button.
 - Optional (off unless you turn it on): start with Windows, always on top, an on-screen overlay.
 
+## The Mac app (Apple Silicon)
+It is the same app as the Windows one: it loads your Roger server's page in the same locked-down window and uses the same microphone-only permission.
+- It uses only the talk keys you choose (through the normal macOS shortcut feature). It does not read other keys, and there is no Accessibility or keyboard-monitoring permission.
+  Mouse buttons can't be used as keys on a Mac, and the "key released" check is a guess from key repeats.
+- **Updates:** it asks the MAC-Roger GitHub repository for a newer release when you open it and, if there is one, tells you and opens the download page. It never installs anything by itself.
+- It is built by GitHub's own build computers from its own public repository, **MAC-Roger** (see `.github/workflows/build-mac.yml` there), so you can read exactly how. It carries a free "ad-hoc" signature, which Apple Silicon needs to run it, but it is **not notarized** by Apple, so macOS asks you to approve it once.
+
 ## The Android app
 It is a thin shell around the same website. These are the permissions it asks for, and why:
 
@@ -59,5 +66,5 @@ It is a thin shell around the same website. These are the permissions it asks fo
 - Each of them can see the technical traffic that passes through their service (for example, connection addresses).
 
 ## Honest limits
-- The Windows installer and the Android app are **not code-signed with a paid certificate**, so Windows SmartScreen and Android Play Protect may warn the first time. That is about reputation, not behaviour. See `SECURITY.md` for how to check that your download is the real one.
+- The Windows installer, the Android app and the Mac app are **not code-signed with a paid certificate** (the Mac app is not notarized by Apple), so Windows SmartScreen, Android Play Protect and macOS Gatekeeper may warn the first time. That is about reputation, not behaviour. See `SECURITY.md` for how to check that your download is the real one.
 - Roger has **not been independently audited**. It has been tested by its author. Never reuse a password from another account here.

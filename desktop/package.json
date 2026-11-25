@@ -7,7 +7,7 @@
     "scripts": {
         "start": "electron .",
         "dist": "electron-builder --win nsis --publish never",
-        "dist:mac": "electron-builder --mac --universal --publish never"
+        "dist:mac": "electron-builder --mac --arm64 --publish never"
     },
     "dependencies": {
         "electron-updater": "^6.8.11",
@@ -56,19 +56,20 @@
         },
         "mac": {
             "target": [
-                "dmg",
-                "zip"
+                { "target": "dmg", "arch": ["arm64"] },
+                { "target": "zip", "arch": ["arm64"] }
             ],
             "category": "public.app-category.social-networking",
             "icon": "icon.png",
-            "identity": null,
-            "artifactName": "Roger-${version}-mac.${ext}",
+            "identity": "-",
+            "hardenedRuntime": false,
+            "artifactName": "Roger-${version}-mac-arm64.${ext}",
             "extendInfo": {
                 "NSMicrophoneUsageDescription": "Roger needs the microphone so your squad can hear you when you talk."
             }
         },
         "dmg": {
-            "artifactName": "Roger-${version}-mac.${ext}"
+            "artifactName": "Roger-${version}-mac-arm64.${ext}"
         }
     },
     "allowScripts": {

@@ -57,6 +57,9 @@ PowerShell:  ``Get-FileHash .\Roger-Setup-$Version.exe -Algorithm SHA256``   (it
 - Windows may warn about a new, unsigned program ("Windows protected your PC"): that is about reputation, not behaviour. Choose **More info > Run anyway**.
   Android may show a Play Protect notice: choose **Install anyway**. Never turn off your antivirus for this.
 - Already installed? The Windows app and the Android app both update themselves when you open them.
+
+### Mac
+The Mac version (Apple Silicon: M1, M2, M3, M4) is in its own repository: https://github.com/Coloseal/MAC-Roger/releases/latest. It uses the same server, so Mac and Windows players are on the same channels.
 "@ | Set-Content (Join-Path $root 'release-notes.md') -Encoding utf8
 
 Write-Host ""

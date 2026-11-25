@@ -8,6 +8,7 @@
 //                                 that free hosting wipes at every restart.
 
 const http = require('http');
+const net = require('net');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -232,7 +233,17 @@ const ipLimiter = new Limiter({ max: 60, lockMs: 5 * 60_000 });
 const pwLimiter = new Limiter({ max: 5, lockMs: 10 * 60_000 });
 let SECRET = '';
 
-const clientIp = (req) => String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || '?';
+// Which address is this visitor really on? Never the FIRST x-forwarded-for entry: visitors can write that one themselves, which made
+// the per-address login limit useless (every attempt could claim to come from a new address). Roger runs behind Cloudflare and
+// Render's front door, so we use the address Cloudflare itself recorded (cf-connecting-ip, which Cloudflare overwrites on every request),
+// or else the entry the first trusted proxy added (second from the end: "...visitor, cloudflare"), or else the connection's own address.
+const asIp = (s) => { s = String(s || '').trim(); return net.isIP(s) ? s : ''; };
+function clientIp(req) {
+  const cf = asIp(req.headers['cf-connecting-ip']); if (cf) return cf;
+  const fwd = String(req.headers['x-forwarded-for'] || '').split(',').map((s) => s.trim()).filter(Boolean);
+  const pick = fwd.length >= 2 ? asIp(fwd[fwd.length - 2]) : asIp(fwd[0]);
+  return pick || req.socket.remoteAddress || '?';
+}
 function json(res, code, obj) { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); }
 const mintToken = (u) => signToken({ u: u.id, v: u.tokver, e: Date.now() + TOKEN_LIFE_MS }, SECRET);
 
@@ -245,6 +256,17 @@ function readBody(req, limit = 4096) {
   });
 }
 
+const LOGIN_PARALLEL = 3, LOGIN_QUEUE_MAX = 120;
+let loginRunning = 0; const loginQueue = [];
+function loginSlot() {
+  return new Promise((resolve, reject) => {
+    if (loginRunning < LOGIN_PARALLEL) { loginRunning++; return resolve(); }
+    if (loginQueue.length >= LOGIN_QUEUE_MAX) return reject(new Error('busy'));
+    loginQueue.push(resolve);
+  });
+}
+function loginDone() { const next = loginQueue.shift(); if (next) next(); else loginRunning--; }
+
 async function handleLogin(req, res) {
   let body;
   try { body = JSON.parse(await readBody(req)); } catch { return json(res, 400, { ok: false, error: 'Bad request.' }); }
@@ -252,7 +274,11 @@ async function handleLogin(req, res) {
   const ip = clientIp(req), kUser = 'u:' + username.toLowerCase(), kIp = 'ip:' + ip;
   const a = loginLimiter.check(kUser), b = ipLimiter.check(kIp);
   if (!a.ok || !b.ok) return json(res, 429, { ok: false, error: `Too many attempts. Try again in ${Math.max(a.wait, b.wait)} seconds.` });
-  const r = await accounts.authenticate(username, password);
+  // Checking a password is deliberately slow (that is what protects the hashes), so only a few run at once; the rest wait in line.
+  // Without this, a flood of sign-in attempts could keep the whole server busy.
+  try { await loginSlot(); } catch { return json(res, 503, { ok: false, error: 'Roger is busy right now. Try again in a few seconds.' }); }
+  let r;
+  try { r = await accounts.authenticate(username, password); } finally { loginDone(); }
   if (!r.ok) {
     if (r.error === 'bad_credentials') {
       loginLimiter.fail(kUser); ipLimiter.fail(kIp);
@@ -288,8 +314,10 @@ function cspFor(html, host) {
   ].join('; ');
 }
 
-const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, 'http://x');
+const onRequest = async (req, res) => {
+  // A request line the URL parser rejects (for example "GET // HTTP/1.1") must get a plain 400, never crash the server.
+  let url;
+  try { url = new URL(req.url, 'http://x'); } catch { res.writeHead(400); return res.end(); }
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'no-referrer');
@@ -303,9 +331,11 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/status') return json(res, 200, { ready: accounts ? [...store.users.values()].some((u) => u.role === 'admin') : false });
     if (url.pathname === '/api/login' && req.method === 'POST') return await handleLogin(req, res);
     if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); return res.end(); }
-    const rel = url.pathname === '/' ? '/index.html' : decodeURIComponent(url.pathname);
+    let rel = '/index.html';
+    if (url.pathname !== '/') { try { rel = decodeURIComponent(url.pathname); } catch { res.writeHead(400); return res.end(); } }
+    if (rel.includes('\0')) { res.writeHead(400); return res.end(); }
     const file = path.normalize(path.join(PUBLIC, rel));
-    if (!file.startsWith(PUBLIC)) { res.writeHead(403); return res.end(); }
+    if (file !== PUBLIC && !file.startsWith(PUBLIC + path.sep)) { res.writeHead(403); return res.end(); }   // (with the separator, a folder like "public-old" next to it can't match)
     fs.readFile(file, (err, data) => {
       if (err) { res.writeHead(404); return res.end('Not found'); }
       const hdr = { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache' };
@@ -314,7 +344,14 @@ const server = http.createServer(async (req, res) => {
       res.end(data);
     });
   } catch (e) { console.error('http error:', e.message); if (!res.headersSent) { res.writeHead(500); } res.end(); }
+};
+const server = http.createServer((req, res) => {
+  onRequest(req, res).catch((e) => { console.error('http error:', e && e.message); try { if (!res.headersSent) res.writeHead(500); res.end(); } catch {} });
 });
+server.headersTimeout = 15_000; server.requestTimeout = 30_000;        // a client that dribbles its request in slowly is cut off
+// Last line of defence: one unexpected error in one request or message is logged, not allowed to take the whole radio down.
+process.on('unhandledRejection', (e) => console.error('unhandled rejection:', (e && e.stack) || e));
+process.on('uncaughtException', (e) => console.error('uncaught exception:', (e && e.stack) || e));
 
 // ---- websocket -----------------------------------------------------------
 const wss = new WebSocketServer({
@@ -378,8 +415,29 @@ async function handleAdmin(client, msg) {
   }
 }
 
+// Flood protection. Everyone who is signed in is trusted to talk, but nobody should be able to make the server do unlimited work.
+//  - control messages (join, leave, key up/down ...): a steady 30 a second, with room for a burst of 60
+//  - audio: a steady 128 KB a second (real voice is 32 KB a second uncompressed, far less compressed), with room for a 384 KB burst
+//  - at most 24 channels per person, and at most 150 connections that haven't signed in yet
+const MSG_RATE = { cap: 60, perSec: 30 }, BYTE_RATE = { cap: 384 * 1024, perSec: 128 * 1024 };
+const MAX_CHANNELS_PER_USER = 24, MAX_UNSIGNED = 150;
+function takeToken(bucket, cost, rate) {
+  const now = Date.now();
+  bucket.tokens = Math.min(rate.cap, bucket.tokens + (now - bucket.last) * rate.perSec / 1000); bucket.last = now;
+  if (bucket.tokens < cost) return false;
+  bucket.tokens -= cost; return true;
+}
+function strike(client) {                                       // too many over-limit messages in a short time: disconnect
+  const now = Date.now();
+  if (now - (client.strikeAt || 0) > 10_000) { client.strikeAt = now; client.strikes = 0; }
+  if (++client.strikes > 300) { try { client.ws.close(4008, 'too fast'); } catch {} }
+}
+
 wss.on('connection', (ws) => {
-  const client = { id: nextClientId++, name: '', user: null, ws, channels: new Set(), talkingIn: null, alive: true };
+  let unsigned = 0; for (const c of clients.values()) if (!c.user) unsigned++;
+  if (unsigned >= MAX_UNSIGNED) { try { ws.close(1013, 'busy'); } catch {} return; }
+  const client = { id: nextClientId++, name: '', user: null, ws, channels: new Set(), talkingIn: null, alive: true,
+    rlMsg: { tokens: MSG_RATE.cap, last: Date.now() }, rlBytes: { tokens: BYTE_RATE.cap, last: Date.now() } };
   clients.set(client.id, client);
   const authTimer = setTimeout(() => { if (!client.user) { try { ws.close(4000, 'no sign-in'); } catch {} } }, 15_000);
   ws.on('pong', () => { client.alive = true; });
@@ -389,6 +447,7 @@ wss.on('connection', (ws) => {
     if (isBinary) {
       const ch = client.talkingIn;
       if (!client.user || !ch || !ch.talkers.has(client)) return;
+      if (!takeToken(client.rlBytes, data.length, BYTE_RATE)) { strike(client); return; }          // sending far more audio than a microphone can make: dropped
       if (isMuted(client, ch)) { releaseFloor(ch, client); sendTo(client, { type: 'muted', ch: ch.name }); broadcastState(); return; }   // muted while talking: cut off
       const opus = client.txCodec === 'opus';
       const packets = opus ? opusPackets(data) : 0;
@@ -413,8 +472,10 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    if (!takeToken(client.rlMsg, 1, MSG_RATE)) { strike(client); return; }
     let msg;
     try { msg = JSON.parse(data.toString()); } catch { return; }
+    if (!msg || typeof msg !== 'object') return;
 
     if (msg.type === 'hello') { await handleHello(client, msg); return; }
     if (!client.user) return;                                          // nothing else works until you've signed in
@@ -431,6 +492,8 @@ wss.on('connection', (ws) => {
       if (!name) return;
       const until = bans.get(`${client.user.id}|${name}`);
       if (until && until > Date.now()) { sendTo(client, { type: 'join_denied', ch: name, reason: 'blocked', minutes: Math.ceil((until - Date.now()) / 60000) }); return; }
+      const existing = channels.get(name);
+      if (!(existing && client.channels.has(existing)) && client.channels.size >= MAX_CHANNELS_PER_USER) return;   // (one person can't join, or create, endless channels)
       const ch = getChannel(name);
       if (!ch) return;
       ch.members.add(client); client.channels.add(ch);
