@@ -6,8 +6,16 @@
 
 const { app, BrowserWindow, ipcMain, session, shell, Menu, net, globalShortcut, screen, Tray, dialog, nativeImage, systemPreferences } = require('electron');
 const IS_MAC = process.platform === 'darwin';
+const IS_LINUX = process.platform === 'linux';
+// Linux has two display systems. On the older one (X11) an app can check whether a key is still held; on the newer one (Wayland)
+// it can't, and global keys go through the desktop's "global shortcuts" service, which only reports presses.
+const IS_WAYLAND = IS_LINUX && (process.env.XDG_SESSION_TYPE === 'wayland' || !!process.env.WAYLAND_DISPLAY);
 const path = require('path');
 const fs = require('fs');
+if (IS_LINUX) app.commandLine.appendSwitch('enable-features', 'GlobalShortcutsPortal');   // global keys on Wayland (must be set before startup)
+// Where updates are only announced, not installed: the Mac (unsigned apps can't self-update) and a Linux package install
+// (only the AppImage can replace itself without an administrator password).
+const NOTIFY_ONLY = IS_MAC || (IS_LINUX && !process.env.APPIMAGE);
 
 const SERVER_URL = (process.env.BHR_SERVER || require('./config.json').serverUrl).replace(/\/+$/, '');
 const SERVER_ORIGIN = new URL(SERVER_URL).origin;
@@ -70,7 +78,33 @@ const VK_SPECIAL = {
   Space: 0x20, Tab: 0x09, Enter: 0x0D, Backspace: 0x08, Insert: 0x2D, Delete: 0x2E, Home: 0x24, End: 0x23, PageUp: 0x21, PageDown: 0x22,
   Up: 0x26, Down: 0x28, Left: 0x25, Right: 0x27, numadd: 0x6B, numsub: 0x6D, nummult: 0x6A, numdiv: 0x6F, numdec: 0x6E,
 };
-function vkFor(accel) {                                 // accelerator such as "Control+F8" -> Windows virtual-key code of its main key
+// The same keys as X11 "keysym" numbers (Linux).
+const XK_SPECIAL = {
+  Space: 0x20, Tab: 0xFF09, Enter: 0xFF0D, Backspace: 0xFF08, Insert: 0xFF63, Delete: 0xFFFF, Home: 0xFF50, End: 0xFF57, PageUp: 0xFF55, PageDown: 0xFF56,
+  Up: 0xFF52, Down: 0xFF54, Left: 0xFF51, Right: 0xFF53, numadd: 0xFFAB, numsub: 0xFFAD, nummult: 0xFFAA, numdiv: 0xFFAF, numdec: 0xFFAE,
+};
+function keysymFor(accel) {
+  const key = String(accel).split('+').pop();
+  if (XK_SPECIAL[key] != null) return XK_SPECIAL[key];
+  let m;
+  if ((m = /^F(\d{1,2})$/i.exec(key)) && +m[1] >= 1 && +m[1] <= 24) return 0xFFBE + +m[1] - 1;
+  if ((m = /^num(\d)$/i.exec(key))) return 0xFFB0 + +m[1];
+  return key.length === 1 ? key.toLowerCase().charCodeAt(0) : null;     // letters, digits and punctuation are their own character code
+}
+// X11: ask the display which keys are down right now, and look only at the one talk key.
+function x11KeyReader() {
+  const koffi = require('koffi');
+  const x = koffi.load('libX11.so.6');
+  const openDisplay = x.func('void* XOpenDisplay(const char* name)');
+  const keycodeOf = x.func('uint8_t XKeysymToKeycode(void* display, unsigned long keysym)');
+  const queryKeymap = x.func('int XQueryKeymap(void* display, _Out_ uint8_t *keys)');
+  const display = openDisplay(null);
+  if (!display) throw new Error('no X display');
+  const keys = Buffer.alloc(32);                       // one bit per key
+  return (sym) => { const code = keycodeOf(display, sym); if (!code) return false; queryKeymap(display, keys); return (keys[code >> 3] & (1 << (code & 7))) !== 0; };
+}
+function vkFor(accel) {                                 // accelerator such as "Control+F8" -> the system's code for its main key
+  if (IS_LINUX) return keysymFor(accel);
   const key = String(accel).split('+').pop();
   if (VK_SPECIAL[key] != null) return VK_SPECIAL[key];
   let m;
@@ -84,6 +118,10 @@ let keyReader;                                          // undefined = not tried
 function getKeyReader() {
   if (keyReader !== undefined) return keyReader;
   keyReader = null;
+  if (IS_LINUX && !IS_WAYLAND) {
+    try { keyReader = x11KeyReader(); } catch (e) { console.error('key release detection unavailable:', e.message); }
+    return keyReader;
+  }
   if (process.platform !== 'win32') return null;
   try {
     const koffi = require('koffi');
@@ -102,7 +140,7 @@ function getMouseReader() {
     const file = process.env.BHR_FAKE_MOUSE;
     return (vk) => { try { return fs.readFileSync(file, 'utf8').split(',').map((s) => s.trim()).includes(String(vk)); } catch { return false; } };
   }
-  return getKeyReader();
+  return process.platform === 'win32' ? getKeyReader() : null;        // mouse-button talk keys are Windows only
 }
 const mouseBound = () => Object.entries(hotkeys).filter(([, a]) => MOUSE_VK[a]);
 function syncMousePoller() {
@@ -155,7 +193,8 @@ function registerAll() {
   }
   syncMousePoller();
 }
-const hotkeyState = () => ({ keys: { ...hotkeys }, failed: { ...failedKeys }, slotScheme, mouseOk: process.platform === 'win32' || !!process.env.BHR_FAKE_MOUSE });
+const hotkeyState = () => ({ keys: { ...hotkeys }, failed: { ...failedKeys }, slotScheme, mouseOk: process.platform === 'win32' || !!process.env.BHR_FAKE_MOUSE,
+  pressOnly: IS_WAYLAND });          // pressOnly: a global key can't be "held" here, so the page uses press to talk / press again to stop
 
 ipcMain.handle('hk-get', () => hotkeyState());
 ipcMain.handle('slots-set', (_e, scheme) => {
@@ -200,7 +239,8 @@ ipcMain.handle('hk-clear', (_e, id) => {
 // with the speaker's name while someone else talks. It never takes focus from the game.
 const OV_W = 280, OV_H = 56, OV_MARGIN = 16;
 let ovWin = null, ovLoaded = false, ovLast = { mode: 'off' }, ovHideTimer = null;
-const ovCfg = () => ({ on: settings.overlayOn !== false, pos: settings.overlayPos || 'bottom-right' });
+// (On Wayland an app can't place a window, so the overlay would appear in the middle of the screen: off there unless switched on.)
+const ovCfg = () => ({ on: IS_WAYLAND ? settings.overlayOn === true : settings.overlayOn !== false, pos: settings.overlayPos || 'bottom-right' });
 
 function ovPlace() {
   if (!ovWin || ovWin.isDestroyed()) return;
@@ -252,10 +292,21 @@ ipcMain.on('overlay-test', () => {
   setTimeout(() => ovApply({ mode: 'off' }), 3400);
 });
 
-ipcMain.handle('get-startup', () => !!app.getLoginItemSettings().openAtLogin);
+// Linux has no built-in call for "start when I sign in": it is a small file in ~/.config/autostart.
+const autostartFile = () => path.join(process.env.XDG_CONFIG_HOME || path.join(app.getPath('home'), '.config'), 'autostart', 'roger.desktop');
+function linuxAutostart(on) {
+  try {
+    if (!on) { fs.rmSync(autostartFile(), { force: true }); return; }
+    const exe = (process.env.APPIMAGE || process.execPath).replace(/(["`$\\])/g, '\\\\$1').replace(/%/g, '%%');   // quoting rules for .desktop files
+    fs.mkdirSync(path.dirname(autostartFile()), { recursive: true });
+    fs.writeFileSync(autostartFile(), `[Desktop Entry]\nType=Application\nName=Roger\nExec="${exe}" --hidden\nTerminal=false\n`);
+  } catch (e) { console.error('autostart:', e.message); }
+}
+const startsAtLogin = () => (IS_LINUX ? fs.existsSync(autostartFile()) : !!app.getLoginItemSettings().openAtLogin);
+ipcMain.handle('get-startup', () => startsAtLogin());
 ipcMain.handle('set-startup', (_e, v) => {
-  if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: !!v, args: ['--hidden'] });
-  return !!app.getLoginItemSettings().openAtLogin;
+  if (app.isPackaged) { if (IS_LINUX) linuxAutostart(!!v); else app.setLoginItemSettings({ openAtLogin: !!v, args: ['--hidden'] }); }
+  return startsAtLogin();
 });
 ipcMain.handle('get-on-top', () => !!settings.onTop);
 ipcMain.handle('set-on-top', (_e, v) => {
@@ -295,16 +346,17 @@ function initUpdater() {
   try {
     ({ autoUpdater: updater } = require('electron-updater'));
   } catch (e) { console.error('updater unavailable:', e.message); return; }
-  // Windows installs updates by itself. The Mac version isn't code-signed (that needs a paid Apple account), and macOS refuses
-  // to self-install unsigned updates, so on a Mac we just tell you a new version exists and open the download page.
-  updater.autoDownload = !IS_MAC;
-  updater.autoInstallOnAppQuit = !IS_MAC;
+  // Windows (and the Linux AppImage) install updates by themselves. Where that isn't possible (see NOTIFY_ONLY above) we just
+  // tell you a new version exists and open the download page.
+  updater.autoDownload = !NOTIFY_ONLY;
+  updater.autoInstallOnAppQuit = !NOTIFY_ONLY;
   if (testFeed) { updater.forceDevUpdateConfig = true; updater.setFeedURL({ provider: 'generic', url: testFeed }); }
   updater.on('checking-for-update', () => setUpd({ state: 'checking', error: '' }));
   updater.on('update-available', (i) => {
-    if (IS_MAC) {
+    if (NOTIFY_ONLY) {
       setUpd({ state: 'available', next: i.version });
-      dialog.showMessageBox({ type: 'info', buttons: ['Download', 'Later'], defaultId: 0, title: 'Roger update', message: `Roger ${i.version} is available.`, detail: 'Download the new version, open it, and drag Roger into Applications (replace the old one).' })
+      const how = IS_MAC ? 'Download the new version, open it, and drag Roger into Applications (replace the old one).' : 'Download the new .deb file and install it over the old one.';
+      dialog.showMessageBox({ type: 'info', buttons: ['Download', 'Later'], defaultId: 0, title: 'Roger update', message: `Roger ${i.version} is available.`, detail: how })
         .then((r) => { if (r.response === 0) shell.openExternal('https://github.com/Coloseal/Roger/releases/latest'); }).catch(() => {});
       return;
     }
@@ -338,7 +390,8 @@ ipcMain.handle('upd-install', () => {
 // Closing the window (X) can keep Roger running in the system tray, so your hotkeys and incoming voice keep working.
 // Right-click the tray icon -> "Quit Roger" ends everything (main window, overlay and background processes).
 let tray = null, quitting = false;
-const closeToTray = () => settings.closeToTray !== false;
+// (Many Linux desktops show no tray icon at all, so there closing the window really quits unless you choose otherwise.)
+const closeToTray = () => (IS_LINUX ? settings.closeToTray === true : settings.closeToTray !== false);
 
 function showWindow() {
   if (!win || win.isDestroyed()) { createWindow(); return; }
@@ -363,8 +416,9 @@ function buildTrayMenu() {
 }
 function buildTray() {
   try {
-    // Windows uses the .ico; the Mac menu bar needs a small PNG.
-    tray = new Tray(IS_MAC ? nativeImage.createFromPath(path.join(__dirname, 'icon.png')).resize({ width: 18, height: 18 }) : path.join(__dirname, 'icon.ico'));
+    // Windows uses the .ico; the Mac menu bar and Linux panels need a small PNG.
+    const small = (n) => nativeImage.createFromPath(path.join(__dirname, 'icon.png')).resize({ width: n, height: n });
+    tray = new Tray(IS_MAC ? small(18) : IS_LINUX ? small(22) : path.join(__dirname, 'icon.ico'));
     tray.setToolTip('Roger');
     tray.setContextMenu(buildTrayMenu());
     tray.on('click', () => { if (win && !win.isDestroyed() && win.isVisible() && win.isFocused()) win.hide(); else showWindow(); });

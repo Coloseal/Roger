@@ -45,6 +45,14 @@ It is the same app as the Windows one: it loads your Roger server's page in the 
 - **Updates:** it asks the MAC-Roger GitHub repository for a newer release when you open it and, if there is one, tells you and opens the download page. It never installs anything by itself.
 - It is built by GitHub's own build computers from its own public repository, **MAC-Roger** (see `.github/workflows/build-mac.yml` there), so you can read exactly how. It carries a free "ad-hoc" signature, which Apple Silicon needs to run it, but it is **not notarized** by Apple, so macOS asks you to approve it once.
 
+## The Linux app
+The same app again, built by GitHub from its own public repository, **LINUX-Roger**.
+- On X11, while one of your talk keys is held it asks the display which keys are down (`XQueryKeymap`) and looks only at that one key, so it knows when you let go. It installs no hook and records nothing.
+  On Wayland it can't do that: global keys go through the desktop's shortcuts service, so it is press to talk, press again to stop.
+- **Updates:** the AppImage updates itself from that repository's releases; the `.deb` only tells you a new version exists.
+- The `.deb` keeps Chromium's sandbox on. Some systems (such as Ubuntu 24.04) only let the AppImage start with the sandbox off, so prefer the `.deb` there.
+- Optional "start when your computer starts" writes one small file in `~/.config/autostart`.
+
 ## The Android app
 It is a thin shell around the same website. These are the permissions it asks for, and why:
 

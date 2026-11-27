@@ -441,7 +441,7 @@
           <div class="row" style="margin-top:8px"><span class="note" style="flex:1;margin:0">Right-click the tray icon (bottom-right of your screen, maybe under the ^ arrow) and choose Quit to exit from there.</span><button class="ghost" id="quitBtn" type="button">Quit Roger now</button></div>
         </div>
         <h3>Window</h3>
-        <label class="chk"><input type="checkbox" id="cStartup"> Start Roger when Windows starts</label>
+        <label class="chk"><input type="checkbox" id="cStartup"> Start Roger when your computer starts</label>
         <label class="chk"><input type="checkbox" id="onTop"> Keep this window on top of the game</label>
       </div>
       <div id="updBox" class="hidden">
@@ -2129,6 +2129,11 @@
       if (id === 'deafen') { const n = performance.now(); if (n - (ks.deafen || 0) > 400) toggleSelfDeaf(); ks.deafen = n; return; }   // a press flips it; held-key repeats are ignored
       const s = ks[id] || (ks[id] = { last: 0, mode: 'idle', probe: 0, rel: 0 });
       const now = performance.now(), gap = now - s.last; s.last = now;
+      if (hk && hk.pressOnly) {                          // ---- this computer only reports presses (Linux with Wayland): press to talk, press again to stop
+        if (gap < 400) return;                           // (a key that is held down and repeating counts once)
+        if (ptt === 'idle') talkDown(id); else if (talkOwner === id) talkUp(id); else if (!talkOwner) pttUp();
+        return;
+      }
       if (tracked) {                                     // ---- the app is watching this key and will tell us the moment it is released
         clearTimeout(s.rel); clearTimeout(s.probe);
         s.tracked = true; s.pressAt = now; s.ignoreUp = false;
@@ -2216,7 +2221,10 @@
       $('updCheck').onclick = () => window.bhr.checkUpdate().then(showUpd);
       $('updbtn').onclick = () => window.bhr.installUpdate();
     }
-    window.bhr.getHotkeys().then((r) => { hk = r; render(); });
+    window.bhr.getHotkeys().then((r) => {
+      hk = r; render();
+      if (r && r.pressOnly) $('hint').textContent = 'Press your talk key once to talk and again to stop (change the key in Settings → Control). If someone is talking, your message is recorded and sent when they finish.';
+    });
     $('selSlots').onchange = async (e) => { hk = await window.bhr.setSlotScheme(e.target.value); renderSlots(); render(); };
     window.bhr.getOverlay().then((c) => { $('cOverlay').checked = c.on; $('selOvPos').value = c.pos; });
     $('cOverlay').onchange = (e) => window.bhr.setOverlay({ on: e.target.checked });

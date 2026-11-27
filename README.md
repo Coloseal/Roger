@@ -108,6 +108,11 @@ release there. Its README explains the one-time macOS approval players have to d
 To make the folder for that repository from this project's code, run `.\build-mac-repo.ps1` (it writes `github-upload-mac`).
 Run it again after changing anything in `desktop\` so the Mac repository matches.
 
+## Linux app
+Like the Mac app, the Linux app lives in its own repository, https://github.com/Coloseal/LINUX-Roger, which builds an `.AppImage` and a `.deb` on GitHub
+whenever you publish a release there. Make its folder with ``.\build-linux-repo.ps1`` (it writes ``github-upload-linux``) and run it again after changing
+anything in ``desktop\``.
+
 ## Run locally for testing
 ```
 npm install
